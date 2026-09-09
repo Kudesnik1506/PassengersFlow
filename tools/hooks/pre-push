@@ -42,6 +42,29 @@ echo "── семантические гейты ─────────�
 echo "· разметка дверей"
 python3 tools/hooks/gate_zones.py || FAILED=1
 
+# Память решений: заголовки, закрытые словари, сверка каталога с набором файлов.
+# Данных не требует, поэтому идёт до всего, что упирается в видео.
+echo "· память решений"
+python3 tools/hooks/gate_memory.py || FAILED=1
+
+# Не блокирующее предупреждение: диф тронул файл, на который ссылается запись,
+# а сама запись не тронута. Блокировать нельзя — получится рефлекс «жать не
+# глядя», ровно тот, от которого избавились в гейте baseline.
+if [ -d docs/decisions ]; then
+    CHANGED=$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)
+    TOUCHED=$(printf '%s\n' "$CHANGED" | grep '^docs/decisions/' || true)
+    if [ -z "$TOUCHED" ]; then
+        for f in $CHANGED; do
+            HITS=$(grep -rl "file:$f" docs/decisions/ 2>/dev/null | grep -v 'README.md' || true)
+            if [ -n "$HITS" ]; then
+                echo "  ⚠ затронут $f, на него ссылаются записи:"
+                for h in $HITS; do echo "      $(basename "$h")"; done
+                echo "    если поведение изменилось — обновите запись"
+            fi
+        done
+    fi
+fi
+
 # Тесты идут до гейтов, требующих данных: они не зависят ни от видео, ни от
 # кэша, отрабатывают за доли секунды и покрывают ровно те дефекты, которые в
 # прошлый раз были найдены руками (принцип 8).
