@@ -28,6 +28,31 @@ dependencies = [
     "clip @ git+https://github.com/ultralytics/CLIP.git@a13192f8cb767260d7dfd98c843b0716593169e7",
 ]
 
+[dependency-groups]
+# Отдельная лёгкая группа под тесты. Смысл: тесты не трогают ни видео, ни веса,
+# ни torch — им хватает numpy, pydantic, pandas и rich, а это установка за
+# секунды. Полный `uv sync` тянет torch (гигабайты, минуты) и в CI на каждый
+# push неоправдан.
+#
+# Границы версий здесь дублируют [project.dependencies] — это осознанное
+# нарушение принципа 2, единственная альтернатива которому «ставить torch ради
+# юнит-тестов». Чтобы дубликат не разъехался молча, он проверяется тестом:
+# tests/test_packaging.py сверяет обе записи и падает при расхождении.
+test = [
+    "pytest>=8.0",
+    "numpy>=1.26",
+    "pydantic>=2.9",
+    "pandas>=2.2",
+    "rich>=13.9",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Пакет не устанавливается ради тестов: import идёт прямо из src. Так тесты
+# работают и там, где проект не собран (CI без torch).
+pythonpath = ["src", "tests"]
+addopts = "-q --strict-markers"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

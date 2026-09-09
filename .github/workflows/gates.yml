@@ -30,6 +30,18 @@ jobs:
       - name: Разметка дверей
         run: python3 tools/hooks/gate_zones.py
 
+      # Тесты идут и здесь, а не только в pre-push: дефекты, которые они ловят,
+      # по тексту файла не видны, но и данных им не нужно — синтетические сцены
+      # из чисел.
+      - uses: astral-sh/setup-uv@v5
+
+      # Именно --only-group, а не --group: второй поставил бы ещё и зависимости
+      # проекта, то есть torch с ultralytics — минуты и гигабайты на каждый push.
+      # Проверено на чистом окружении: 17 пакетов, установка за 0.1 с.
+      # Пакет не устанавливается вовсе, import идёт из src (pythonpath в pyproject).
+      - name: Тесты
+        run: uv run --only-group test pytest
+
       - name: Напоминание про семантические гейты
         run: |
           echo "Семантические гейты (paxcount check / doors jitter / baseline)"
