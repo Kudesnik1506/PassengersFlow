@@ -46,4 +46,4 @@ jobs:
         run: |
           echo "Семантические гейты (paxcount check / doors jitter / baseline)"
           echo "выполняются локально в pre-push: им нужны видео и кэш треков,"
-          echo "которые не версионируются — см. data/videos/SOURCES.md"
+          echo "которые не версионируются — см. data/test_videos/SOURCES.md"

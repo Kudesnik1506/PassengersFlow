@@ -20,7 +20,7 @@ from ..core.types import DoorSpec, Point, VideoConfig
 from ..core.video import probe
 from ..doors import load_config, save_config
 from ..tracking import get_tracks
-from ..settings import VIDEO_DIR, VIDEO_SUFFIXES, videos_in
+from ..settings import VIDEO_SUFFIXES, videos_in
 from ..visits import build_scene
 
 app = FastAPI(title="paxcount")
@@ -28,7 +28,7 @@ PAGE = (Path(__file__).parent / "index.html").read_text(encoding="utf-8")
 
 
 def _videos() -> list[Path]:
-    return videos_in(VIDEO_DIR)
+    return videos_in(None)
 
 
 def _find(stem: str) -> Path:

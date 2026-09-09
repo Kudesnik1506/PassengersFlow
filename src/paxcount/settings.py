@@ -12,7 +12,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 DATA_DIR = Path("data")
-VIDEO_DIR = DATA_DIR / "videos"
+# Два набора видео, и это разделение по существу, а не по порядку в файлах.
+#
+# Отладочный — ролики с Викисклада: на них ловятся грубые поломки логики и
+# регрессии, но судить по ним о точности нельзя (в каждом единицы событий, а
+# часть снята не в целевых условиях). Боевой — записи с реальных остановок:
+# именно по ним доводится проект и оценивается результат.
+#
+# Обе папки целиком закрыты в .gitignore: кадры содержат лица и номера машин,
+# наружу уходят только числа.
+PROD_VIDEO_DIR = DATA_DIR / "prod_videos"
+TEST_VIDEO_DIR = DATA_DIR / "test_videos"
+# Боевой первым: в отчётах и логах сначала идёт то, по чему судят результат.
+VIDEO_DIRS = (PROD_VIDEO_DIR, TEST_VIDEO_DIR)
 ZONES_DIR = DATA_DIR / "zones"
 # Синтетические ролики (склейки набора) — не съёмка и не часть метрик, но их
 # разметка лежит в общем ZONES_DIR, поэтому проверке набора надо знать, где
@@ -88,8 +100,15 @@ class DoorProposalSettings:
 DOOR_PROPOSAL = DoorProposalSettings()
 
 
-def videos_in(target: Path) -> list[Path]:
-    """Видео по пути: сам файл или всё подходящее в каталоге."""
+def videos_in(target: Path | None) -> list[Path]:
+    """Видео по пути: сам файл, всё подходящее в каталоге или оба набора сразу.
+
+    ``None`` означает «весь материал»: боевой набор, затем отладочный.
+    Отсутствующая папка пропускается — боевой съёмки может ещё не быть, и это
+    не повод падать.
+    """
+    if target is None:
+        return [v for d in VIDEO_DIRS if d.is_dir() for v in videos_in(d)]
     if target.is_dir():
         return sorted(p for p in target.iterdir() if p.suffix.lower() in VIDEO_SUFFIXES)
     return [target]

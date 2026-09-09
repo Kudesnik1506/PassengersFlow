@@ -58,9 +58,12 @@ fi
 
 if ! command -v uv >/dev/null 2>&1; then
     echo "· uv не найден — семантические гейты пропущены"
-elif [ -z "$(ls data/videos/*.webm data/videos/*.mp4 data/videos/*.ogv 2>/dev/null)" ]; then
-    echo "· видео нет (data/videos пуст) — семантические гейты пропущены."
-    echo "  Это ожидаемо на свежем клоне: кадры не версионируются, см. SOURCES.md"
+elif [ -z "$(find data/test_videos data/prod_videos -type f \
+        \( -name '*.webm' -o -name '*.mp4' -o -name '*.ogv' -o -name '*.mov' \
+           -o -name '*.avi' -o -name '*.mkv' \) 2>/dev/null)" ]; then
+    echo "· видео нет — семантические гейты пропущены."
+    echo "  Это ожидаемо на свежем клоне: кадры не версионируются (лица и номера машин),"
+    echo "  см. data/test_videos/SOURCES.md и data/prod_videos/README.md"
 else
     # 1. Набор согласован сам с собой: файлы читаются, эталон и разметка
     #    ссылаются на существующие видео, зоны в допустимых долях, вертикальные

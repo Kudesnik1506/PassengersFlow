@@ -17,7 +17,7 @@ from .core.writer import write_run
 from .doors import is_manual, load_config, save_config
 from .runlog import setup_logger
 from .settings import (
-    DETECTOR, OUT_DIR, TRUTH_PATH, VIDEO_DIR, ZONE_FRACTION_MAX, ZONE_FRACTION_MIN,
+    DETECTOR, OUT_DIR, TRUTH_PATH, ZONE_FRACTION_MAX, ZONE_FRACTION_MIN,
     ZONE_MIN_BOTTOM, ZONE_MIN_TOP, DetectorSettings, videos_in,
 )
 from .tracking import get_tracks
@@ -48,7 +48,7 @@ def _settings(weights: str, imgsz: int, tracker: str, stride: int) -> DetectorSe
 
 
 @app.command()
-def info(target: Path = typer.Argument(VIDEO_DIR)) -> None:
+def info(target: Path | None = typer.Argument(None)) -> None:
     """Показывает параметры видео, наличие ручной разметки и кэша."""
     table = Table(title="Видео")
     for col in ("файл", "разрешение", "fps", "длительность", "разметка", "кэш"):
@@ -66,7 +66,7 @@ def info(target: Path = typer.Argument(VIDEO_DIR)) -> None:
 
 
 @app.command()
-def check(target: Path = typer.Argument(VIDEO_DIR), truth: Path = typer.Option(TRUTH_PATH)) -> None:
+def check(target: Path | None = typer.Argument(None), truth: Path = typer.Option(TRUTH_PATH)) -> None:
     """Детерминированная самопроверка набора: файлы, эталон, разметка, кэш.
 
     Всё, что можно проверить кодом, проверяется кодом — модель для этого не
@@ -187,7 +187,7 @@ def check(target: Path = typer.Argument(VIDEO_DIR), truth: Path = typer.Option(T
 
 @app.command()
 def run(
-    target: Path = typer.Argument(VIDEO_DIR, help="Видео или папка."),
+    target: Path | None = typer.Argument(None, help="Видео или папка; без аргумента — оба набора."),
     backend: str = typer.Option("custom", help=f"Один из: {', '.join(BACKENDS)}."),
     out: Path = typer.Option(OUT_DIR, help="Куда складывать результаты."),
     debug: bool = typer.Option(False, help="Писать отладочное видео с боксами."),
@@ -249,7 +249,7 @@ def _summary(results: list[RunResult]) -> None:
 
 @app.command()
 def bench(
-    target: Path = typer.Argument(VIDEO_DIR),
+    target: Path | None = typer.Argument(None),
     out: Path = typer.Option(OUT_DIR),
     truth: Path = typer.Option(TRUTH_PATH),
     stride: int = typer.Option(DETECTOR.stride),
@@ -295,7 +295,7 @@ def compare(
 
 @app.command()
 def baseline(
-    target: Path = typer.Argument(VIDEO_DIR),
+    target: Path | None = typer.Argument(None),
     save: bool = typer.Option(False, help="Записать текущие числа как новый baseline."),
 ) -> None:
     """Сравнивает текущие числа custom-бэкенда с замороженным baseline.
@@ -417,7 +417,7 @@ def _truncation(data, boxes, frames) -> tuple[bool, bool]:
 
 @doors_app.command("propose")
 def doors_propose(
-    target: Path = typer.Argument(VIDEO_DIR, help="Видео или папка."),
+    target: Path | None = typer.Argument(None, help="Видео или папка; без аргумента — оба набора."),
     method: str = typer.Option("pixels", help=f"Один из: {', '.join(PROPOSAL_METHODS)}."),
     save: bool = typer.Option(True, help="Записать предложение в data/zones/<stem>.auto.json."),
 ) -> None:
@@ -466,7 +466,7 @@ def doors_propose(
 
 @doors_app.command("eval")
 def doors_eval(
-    target: Path = typer.Argument(VIDEO_DIR),
+    target: Path | None = typer.Argument(None),
     method: str = typer.Option("both", help=f"Один из: {', '.join(PROPOSAL_METHODS)}."),
     iou: float = typer.Option(0.5, help="Порог 1D-IoU вдоль x, при котором дверь считается найденной."),
 ) -> None:
@@ -506,7 +506,7 @@ def doors_eval(
 
 
 @doors_app.command("jitter")
-def doors_jitter(target: Path = typer.Argument(VIDEO_DIR)) -> None:
+def doors_jitter(target: Path | None = typer.Argument(None)) -> None:
     """Дрожание дверной зоны внутри визита — на стационарных визитах обязано
     быть 0px в счёте. Ловит рассинхрон системы координат сразу, без эталона.
     """
