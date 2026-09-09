@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+*.pyc
+logs/
+out/
+models/*.pt
+# Веса CLIP, которые тянет tools/bake_world_doors.py при запекании классов.
+# Нужны только для разового запекания — рантайм грузит готовые веса без CLIP.
+weights/
+
+# Персональные данные: кадры с лицами и номерами машин наружу не уходят
+data/videos/*.webm
+data/videos/*.mp4
+data/videos/*.ogv
+data/cache/
+
+# Синтетические склейки — это те же кадры с лицами, только пересобранные
+data/synthetic/*.mp4
+data/synthetic/*.webm
+data/synthetic/*.ogv
+
+# Резервные копии разметки, сделанные перед правками
+data/zones.backup-*/
+
+.DS_Store

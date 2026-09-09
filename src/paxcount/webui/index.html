@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>paxcount — разметка дверей</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1c1f26; --line: #2b303b; --ink: #e8eaee;
+    --muted: #9aa3b2; --accent: #ffd24a; --ok: #62d47a; --warn: #ff8a6b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line);
+           display: flex; align-items: baseline; gap: 14px; }
+  h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .hint { color: var(--muted); font-size: 13px; }
+  main { display: grid; grid-template-columns: 300px 1fr; min-height: calc(100vh - 52px); }
+  aside { border-right: 1px solid var(--line); padding: 14px; overflow-y: auto; }
+  section { padding: 18px 20px; }
+  .item { padding: 9px 10px; border-radius: 7px; cursor: pointer; border: 1px solid transparent; }
+  .item:hover { background: var(--panel); }
+  .item.active { background: var(--panel); border-color: var(--accent); }
+  .item b { display: block; font-weight: 500; }
+  .item span { color: var(--muted); font-size: 12px; }
+  .badge { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: #303643; }
+  .badge.manual { background: #3b3320; color: var(--accent); }
+  .badge.nocache { background: #3b2320; color: var(--warn); }
+  canvas { border: 1px solid var(--line); border-radius: 8px;
+           max-width: 100%; background: #000; touch-action: none; }
+  .toolbar { display: flex; gap: 10px; align-items: center; margin: 12px 0; flex-wrap: wrap; }
+  .sep { width: 1px; height: 22px; background: var(--line); }
+  button { background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+           padding: 7px 13px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.primary { background: var(--accent); color: #1a1a1a; border-color: var(--accent);
+                   font-weight: 600; }
+  button.danger:hover:not(:disabled) { border-color: var(--warn); }
+  kbd { background: #303643; border-radius: 4px; padding: 1px 5px; font-size: 11px; }
+  table { border-collapse: collapse; margin-top: 14px; font-size: 13px; }
+  th, td { padding: 5px 12px 5px 0; text-align: left; }
+  th { color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--line); }
+  .in { color: var(--ok); } .out { color: var(--warn); }
+  .result { margin-top: 16px; padding: 12px 14px; background: var(--panel);
+            border-radius: 8px; display: inline-block; }
+  .result b { font-size: 20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>paxcount</h1>
+  <span class="hint">Тяните мышкой на пустом месте — новая дверь. Клик по зоне — выбрать,
+    тащить за центр — двигать, за уголок/сторону — растянуть.
+    <kbd>Delete</kbd> удалить выбранную, <kbd>Ctrl+Z</kbd> отменить, <kbd>Ctrl+⇧+Z</kbd> вернуть.</span>
+</header>
+<main>
+  <aside id="list"></aside>
+  <section id="work"><p class="hint">Выберите видео слева.</p></section>
+</main>
+<script>
+const state = {
+  stem: null, info: null, zones: [], scale: 1,
+  drag: null,        // {mode:'new'|'move'|'resize', idx, handle, startX, startY, orig}
+  selected: -1,
+  history: [], historyPos: -1,
+};
+
+const HANDLE = 8;       // радиус ручки в пикселях канваса
+const HIT_PAD = 6;      // допуск клика по ручке
+
+async function loadList() {
+  const rows = await (await fetch('/api/videos')).json();
+  document.getElementById('list').innerHTML = rows.map(r => `
+    <div class="item" data-stem="${r.stem}">
+      <b>${r.name}</b>
+      <span>${r.width}×${r.height} · ${r.duration} с
+        ${r.manual ? '<i class="badge manual">ручная</i>' : '<i class="badge">авто</i>'}
+        ${r.cached ? '' : '<i class="badge nocache">нет кэша</i>'}</span>
+    </div>`).join('');
+  document.querySelectorAll('.item').forEach(el =>
+    el.onclick = () => select(el.dataset.stem));
+}
+
+async function select(stem) {
+  document.querySelectorAll('.item').forEach(el =>
+    el.classList.toggle('active', el.dataset.stem === stem));
+  const res = await fetch(`/api/state/${stem}`);
+  if (!res.ok) {
+    document.getElementById('work').innerHTML =
+      `<p class="hint">${(await res.json()).detail}</p>`;
+    return;
+  }
+  state.stem = stem;
+  state.info = await res.json();
+  state.zones = state.info.doors.filter(d => d.mode === 'zone').map(d => d.zone.slice());
+  state.selected = -1;
+  state.history = [deepCopy(state.zones)];
+  state.historyPos = 0;
+  render();
+}
+
+function deepCopy(zones) { return zones.map(z => z.slice()); }
+
+function pushHistory() {
+  state.history = state.history.slice(0, state.historyPos + 1);
+  state.history.push(deepCopy(state.zones));
+  state.historyPos = state.history.length - 1;
+  updateToolbar();
+}
+
+function undo() {
+  if (state.historyPos <= 0) return;
+  state.historyPos--;
+  state.zones = deepCopy(state.history[state.historyPos]);
+  state.selected = -1;
+  draw(); updateToolbar();
+}
+
+function redo() {
+  if (state.historyPos >= state.history.length - 1) return;
+  state.historyPos++;
+  state.zones = deepCopy(state.history[state.historyPos]);
+  state.selected = -1;
+  draw(); updateToolbar();
+}
+
+function deleteSelected() {
+  if (state.selected < 0) return;
+  state.zones.splice(state.selected, 1);
+  state.selected = -1;
+  pushHistory(); draw();
+}
+
+function clearZones() {
+  if (!state.zones.length) return;
+  state.zones = [];
+  state.selected = -1;
+  pushHistory(); draw();
+}
+
+function render() {
+  const i = state.info;
+  document.getElementById('work').innerHTML = `
+    <div class="toolbar">
+      <button id="btnUndo" title="Ctrl+Z">↶ Отменить</button>
+      <button id="btnRedo" title="Ctrl+Shift+Z">↷ Вернуть</button>
+      <div class="sep"></div>
+      <button id="btnDelete" class="danger" title="Delete">✕ Удалить зону</button>
+      <button id="btnClear" class="danger">Очистить всё</button>
+      <div class="sep"></div>
+      <button onclick="propose('pixels')" title="Геометрический поиск проёма по пикселям">
+        ⌕ Предложить (пиксели)</button>
+      <button onclick="propose('openvocab')" title="Модель YOLOWorld по текстовому промпту">
+        ⌕ Предложить (модель)</button>
+      <div class="sep"></div>
+      <button class="primary" onclick="save()">Сохранить разметку</button>
+      <button onclick="run()">Посчитать</button>
+      <span class="hint">кадр ${i.frame_idx} · ${i.ts} с ·
+        визитов ${i.visits.length} ·
+        ${i.vehicle_box ? 'ТС найдено' : 'ТС не найдено — зоны в долях кадра'}</span>
+    </div>
+    <canvas id="cv"></canvas>
+    <div id="out"></div>`;
+  document.getElementById('btnUndo').onclick = undo;
+  document.getElementById('btnRedo').onclick = redo;
+  document.getElementById('btnDelete').onclick = deleteSelected;
+  document.getElementById('btnClear').onclick = clearZones;
+
+  const cv = document.getElementById('cv');
+  const img = new Image();
+  img.onload = () => {
+    const maxW = Math.min(1100, window.innerWidth - 360);
+    state.scale = Math.min(1, maxW / i.width);
+    cv.width = i.width * state.scale;
+    cv.height = i.height * state.scale;
+    state.img = img;
+    draw(); updateToolbar();
+  };
+  img.src = `/api/frame/${state.stem}?frame_idx=${i.frame_idx}`;
+
+  cv.onmousedown = onDown;
+  cv.onmousemove = onMove;
+  cv.onmouseup = onUp;
+  cv.onmouseleave = () => { if (state.drag) onUp(); };
+}
+
+function updateToolbar() {
+  const u = document.getElementById('btnUndo'), r = document.getElementById('btnRedo');
+  const d = document.getElementById('btnDelete');
+  if (u) u.disabled = state.historyPos <= 0;
+  if (r) r.disabled = state.historyPos >= state.history.length - 1;
+  if (d) d.disabled = state.selected < 0;
+}
+
+// ---- координаты: рамка ТС <-> кадр (доли 0..1) ----
+function toVehicle(z) {
+  const b = state.info.vehicle_box;
+  if (!b) return z;
+  const W = state.info.width, H = state.info.height;
+  const bw = (b[2] - b[0]) / W, bh = (b[3] - b[1]) / H;
+  const x0 = b[0] / W, y0 = b[1] / H;
+  return [(z[0] - x0) / bw, (z[1] - y0) / bh, (z[2] - x0) / bw, (z[3] - y0) / bh];
+}
+function toFrame(z) {
+  const b = state.info.vehicle_box;
+  if (!b) return z;
+  const W = state.info.width, H = state.info.height;
+  const bw = (b[2] - b[0]) / W, bh = (b[3] - b[1]) / H;
+  const x0 = b[0] / W, y0 = b[1] / H;
+  return [x0 + z[0] * bw, y0 + z[1] * bh, x0 + z[2] * bw, y0 + z[3] * bh];
+}
+// зона (доли рамки ТС) -> прямоугольник в пикселях канваса
+function zonePx(z) {
+  const cv = document.getElementById('cv');
+  const f = toFrame(z);
+  return [f[0] * cv.width, f[1] * cv.height, f[2] * cv.width, f[3] * cv.height];
+}
+// прямоугольник в пикселях канваса -> зона (доли рамки ТС)
+function pxToZone(r) {
+  const cv = document.getElementById('cv');
+  return toVehicle([r[0] / cv.width, r[1] / cv.height, r[2] / cv.width, r[3] / cv.height]);
+}
+
+function mousePx(e) {
+  const r = e.target.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+// ---- ручки растяжения ----
+function handlesOf(rect) {
+  const [x0, y0, x1, y1] = rect, mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+  return {
+    nw: [x0, y0], n: [mx, y0], ne: [x1, y0],
+    w: [x0, my],                e: [x1, my],
+    sw: [x0, y1], s: [mx, y1], se: [x1, y1],
+  };
+}
+const CURSORS = {
+  nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize',
+  n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize', move: 'move',
+};
+
+function hitTest(px, py) {
+  for (let idx = state.zones.length - 1; idx >= 0; idx--) {
+    const rect = zonePx(state.zones[idx]);
+    const h = handlesOf(rect);
+    for (const [name, [hx, hy]] of Object.entries(h)) {
+      if (Math.abs(px - hx) <= HANDLE + HIT_PAD && Math.abs(py - hy) <= HANDLE + HIT_PAD) {
+        return { idx, handle: name };
+      }
+    }
+    const [x0, y0, x1, y1] = rect;
+    if (px >= x0 && px <= x1 && py >= y0 && py <= y1) {
+      return { idx, handle: 'move' };
+    }
+  }
+  return null;
+}
+
+function onDown(e) {
+  const p = mousePx(e);
+  const hit = hitTest(p.x, p.y);
+  if (hit) {
+    state.selected = hit.idx;
+    state.drag = {
+      mode: hit.handle === 'move' ? 'move' : 'resize',
+      idx: hit.idx, handle: hit.handle,
+      startX: p.x, startY: p.y,
+      orig: zonePx(state.zones[hit.idx]),
+    };
+  } else {
+    state.selected = -1;
+    state.drag = { mode: 'new', startX: p.x, startY: p.y, cur: [p.x, p.y, p.x, p.y] };
+  }
+  draw(); updateToolbar();
+}
+
+function onMove(e) {
+  const p = mousePx(e);
+  const cv = document.getElementById('cv');
+  if (!state.drag) {
+    const hit = hitTest(p.x, p.y);
+    cv.style.cursor = hit ? CURSORS[hit.handle] : 'crosshair';
+    return;
+  }
+  const d = state.drag;
+  if (d.mode === 'new') {
+    d.cur = [d.startX, d.startY, p.x, p.y];
+  } else if (d.mode === 'move') {
+    const dx = p.x - d.startX, dy = p.y - d.startY;
+    const [x0, y0, x1, y1] = d.orig;
+    const w = x1 - x0, h = y1 - y0;
+    const cw = cv.width, ch = cv.height;
+    let nx0 = clamp(x0 + dx, 0, cw - w), ny0 = clamp(y0 + dy, 0, ch - h);
+    state.zones[d.idx] = pxToZone([nx0, ny0, nx0 + w, ny0 + h]);
+  } else if (d.mode === 'resize') {
+    const dx = p.x - d.startX, dy = p.y - d.startY;
+    let [x0, y0, x1, y1] = d.orig;
+    if (d.handle.includes('n')) y0 = clamp(y0 + dy, 0, y1 - 4);
+    if (d.handle.includes('s')) y1 = clamp(y1 + dy, y0 + 4, cv.height);
+    if (d.handle.includes('w')) x0 = clamp(x0 + dx, 0, x1 - 4);
+    if (d.handle.includes('e')) x1 = clamp(x1 + dx, x0 + 4, cv.width);
+    state.zones[d.idx] = pxToZone([x0, y0, x1, y1]);
+  }
+  draw();
+}
+
+function onUp() {
+  if (!state.drag) return;
+  const d = state.drag;
+  if (d.mode === 'new') {
+    const r = [Math.min(d.cur[0], d.cur[2]), Math.min(d.cur[1], d.cur[3]),
+               Math.max(d.cur[0], d.cur[2]), Math.max(d.cur[1], d.cur[3])];
+    if ((r[2] - r[0]) > 6 && (r[3] - r[1]) > 6) {
+      state.zones.push(pxToZone(r));
+      state.selected = state.zones.length - 1;
+      pushHistory();
+    }
+  } else {
+    pushHistory();
+  }
+  state.drag = null;
+  draw(); updateToolbar();
+}
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+function draw() {
+  const cv = document.getElementById('cv'), g = cv.getContext('2d');
+  g.drawImage(state.img, 0, 0, cv.width, cv.height);
+
+  const b = state.info.vehicle_box;
+  if (b) {
+    g.strokeStyle = '#6ab0ff'; g.lineWidth = 2;
+    g.strokeRect(b[0] * state.scale, b[1] * state.scale,
+                 (b[2] - b[0]) * state.scale, (b[3] - b[1]) * state.scale);
+  }
+
+  state.zones.forEach((z, n) => {
+    const [x0, y0, x1, y1] = zonePx(z);
+    const selected = n === state.selected;
+    // Доли МОГУТ законно выходить за рамку ТС (0 или 1) — детектор нередко
+    // обрезает кузов, и реальная граница двери физически лежит за пределами
+    // того, что вообще попало в bbox. Это не ошибка, но человек, правящий
+    // такую дверь, должен это видеть, а не гадать.
+    const outOfBox = z[0] < 0 || z[1] < 0 || z[2] > 1 || z[3] > 1;
+    g.fillStyle = selected ? 'rgba(255,210,74,0.32)' : 'rgba(255,210,74,0.22)';
+    g.strokeStyle = selected ? '#fff' : '#ffd24a';
+    g.lineWidth = selected ? 2.5 : 2;
+    if (outOfBox) g.setLineDash([6, 4]);
+    g.fillRect(x0, y0, x1 - x0, y1 - y0);
+    g.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    g.setLineDash([]);
+    g.fillStyle = selected ? '#fff' : '#ffd24a';
+    g.font = '13px sans-serif';
+    const frac = `[${z[0].toFixed(3)}, ${z[1].toFixed(3)}, ${z[2].toFixed(3)}, ${z[3].toFixed(3)}]`;
+    g.fillText(`дверь ${n + 1}${outOfBox ? ' (за рамкой ТС)' : ''}`, x0 + 5, y0 + 16);
+    if (selected) g.fillText(frac, x0 + 5, y0 + 32);
+
+    if (selected) {
+      const h = handlesOf([x0, y0, x1, y1]);
+      g.fillStyle = '#fff'; g.strokeStyle = '#1a1a1a'; g.lineWidth = 1;
+      Object.values(h).forEach(([hx, hy]) => {
+        g.fillRect(hx - HANDLE / 2, hy - HANDLE / 2, HANDLE, HANDLE);
+        g.strokeRect(hx - HANDLE / 2, hy - HANDLE / 2, HANDLE, HANDLE);
+      });
+    }
+  });
+
+  if (state.drag && state.drag.mode === 'new') {
+    const d = state.drag.cur;
+    g.strokeStyle = '#fff'; g.setLineDash([5, 4]); g.lineWidth = 1.5;
+    g.strokeRect(d[0], d[1], d[2] - d[0], d[3] - d[1]);
+    g.setLineDash([]);
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  if (!state.stem) return;
+  const tag = (e.target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea') return;
+
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+    e.preventDefault();
+    e.shiftKey ? redo() : undo();
+  } else if ((e.key === 'Delete' || e.key === 'Backspace') && state.selected >= 0) {
+    e.preventDefault();
+    deleteSelected();
+  }
+});
+
+async function save() {
+  const r = await (await fetch(`/api/zones/${state.stem}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      zones: state.zones,
+      // Эхом отдаём bbox и кадр, относительно которых человек только что
+      // рисовал (получены из /api/state) — сервер фиксирует их как
+      // reference_box/reference_frame, чтобы paxcount doors remap знал,
+      // к какому bbox привязан пиксельный смысл этой разметки.
+      reference_box: state.info.vehicle_box,
+      reference_frame: state.info.frame_idx,
+    }),
+  })).json();
+  document.getElementById('out').innerHTML =
+    `<p class="hint">Сохранено: ${r.saved} (дверей: ${r.doors})</p>`;
+  loadList();
+}
+
+// Предложение не сохраняется само: кладём зоны в редактор, дальше человек
+// правит и жмёт «Сохранить разметку» — ручная правка всегда побеждает.
+async function propose(method) {
+  document.getElementById('out').innerHTML = '<p class="hint">Ищу двери…</p>';
+  const res = await fetch(`/api/propose/${state.stem}?method=${method}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    document.getElementById('out').innerHTML =
+      `<p class="hint">Не получилось: ${err.detail}</p>`;
+    return;
+  }
+  const r = await res.json();
+  if (!r.zones.length) {
+    document.getElementById('out').innerHTML =
+      `<p class="hint">Метод «${r.method}» не нашёл дверей на ${r.frames} опорных кадрах.
+       Разметьте вручную.</p>`;
+    return;
+  }
+  state.zones = r.zones;
+  state.selected = -1;
+  pushHistory();
+  draw(); updateToolbar();
+  document.getElementById('out').innerHTML =
+    `<p class="hint">Метод «${r.method}»: предложено зон ${r.zones.length}
+     (опорных кадров ${r.frames}). Проверьте и поправьте, затем сохраните.</p>`;
+}
+
+async function run() {
+  document.getElementById('out').innerHTML = '<p class="hint">Считаю…</p>';
+  const r = await (await fetch(`/api/run/${state.stem}`, { method: 'POST' })).json();
+  const rows = r.events.map(e => `<tr>
+      <td>${e.event_ts}</td><td>#${e.person_track_id}</td><td>${e.door_id}</td>
+      <td class="${e.direction}">${e.direction === 'in' ? 'вошёл' : 'вышел'}</td>
+      <td>${e.confidence}</td></tr>`).join('');
+  document.getElementById('out').innerHTML = `
+    <div class="result">вошло <b class="in">${r.boarded}</b> ·
+      вышло <b class="out">${r.alighted}</b> · визитов ${r.visits.length}</div>
+    ${rows ? `<table><tr><th>время</th><th>трек</th><th>дверь</th>
+      <th>событие</th><th>уверенность</th></tr>${rows}</table>`
+     : '<p class="hint">Событий нет.</p>'}`;
+}
+
+loadList();
+</script>
+</body>
+</html>

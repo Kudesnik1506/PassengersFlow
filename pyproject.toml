@@ -1,0 +1,44 @@
+[project]
+name = "paxcount"
+version = "0.1.0"
+description = "Подсчёт пассажиропотока по видео с остановок общественного транспорта"
+requires-python = ">=3.12"
+dependencies = [
+    "ultralytics>=8.3.0",
+    "supervision>=0.25.0",
+    "opencv-python>=4.10.0",
+    "torch>=2.5.0",
+    "torchvision>=0.20.0",
+    "numpy>=1.26",
+    "pydantic>=2.9",
+    "typer>=0.15",
+    "rich>=13.9",
+    "pandas>=2.2",
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "python-multipart>=0.0.12",
+    "jinja2>=3.1",
+    "lap>=0.5.12",
+    "ftfy>=6.3.1",
+    "regex>=2026.9.3",
+    # Нужен только tools/bake_world_doors.py (Метод A, офлайн-запекание классов
+    # YOLOWorld). Ultralytics при первом вызове set_classes() иначе тянет этот
+    # же пакет сама, молча, в рантайме — нарушение принципа 6 (цепочка
+    # поставки). Пиним коммит явно, вместо неявной установки "с хвоста ветки".
+    "clip @ git+https://github.com/ultralytics/CLIP.git@a13192f8cb767260d7dfd98c843b0716593169e7",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/paxcount"]
+artifacts = ["src/paxcount/webui/*.html"]
+
+[tool.hatch.metadata]
+# Нужно для git-зависимости clip, закреплённой на конкретном коммите выше.
+allow-direct-references = true
+
+[project.scripts]
+paxcount = "paxcount.cli:app"
