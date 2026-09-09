@@ -103,3 +103,19 @@ def save_proposal(cfg: VideoConfig, video: Path, method_tag: str) -> Path:
 
 def is_manual(video: Path) -> bool:
     return config_path(video).exists()
+
+
+def markup_state(video: Path) -> str:
+    """Что на самом деле будет считать двери этого ролика.
+
+    Три состояния, а не два. Раньше `paxcount info` печатал «авто» и при
+    настоящем автопредложении, и при полном отсутствии разметки — а это разные
+    вещи: во втором случае работает фолбэк, одна зона на весь корпус, которая
+    ловит и прохожих вдоль борта. Оператор, глядя на боевую запись, видел
+    «авто» и считал, что двери размечены.
+    """
+    if config_path(video).exists():
+        return "ручная"
+    if auto_config_path(video).exists():
+        return "авто"
+    return "фолбэк"

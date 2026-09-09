@@ -14,15 +14,20 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-from .backends.custom import CustomBackend
-from .doors import load_config
-from .settings import DATA_DIR, videos_in
-from .tracking import get_tracks
+from .settings import DATA_DIR
 
 BASELINE_PATH = DATA_DIR / "truth" / "baseline.json"
 
 
 def compute_baseline(target: Path) -> dict[str, dict[str, int]]:
+    # Импорт внутри функции намеренно: он тянет torch, а diff_baseline рядом
+    # обязан оставаться доступным без окружения проекта — его проверяет
+    # лёгкий тестовый набор, который идёт и в CI.
+    from .backends.custom import CustomBackend
+    from .doors import load_config
+    from .settings import videos_in
+    from .tracking import get_tracks
+
     out: dict[str, dict[str, int]] = {}
     for video in videos_in(target):
         data, _, _ = get_tracks(video)
@@ -56,11 +61,23 @@ def diff_baseline(
     for video in videos:
         o = old.get(video, {"boarded": "—", "alighted": "—"})
         n = new.get(video, {"boarded": "—", "alighted": "—"})
-        diff = o != n
+        # Новая запись расхождением не считается: сравнивать не с чем, и о
+        # дрейфе чисел она ничего не говорит. Иначе каждая боевая съёмка
+        # блокировала бы push до `baseline --save`, а это приучает жать
+        # `--save` не глядя — тогда гейт перестаёт значить что-либо.
+        # Пропажа записи, наоборот, сигнал: данные или путь потерялись.
+        if video not in old:
+            note, diff = "[dim]новое[/dim]", False
+        elif video not in new:
+            note, diff = "[red]пропало[/red]", True
+        elif o != n:
+            note, diff = "[yellow]изменилось[/yellow]", True
+        else:
+            note, diff = "", False
         changed = changed or diff
         table.add_row(
-            video, str(o["boarded"]), str(n["boarded"]), str(o["alighted"]), str(n["alighted"]),
-            "[yellow]изменилось[/yellow]" if diff else "",
+            video, str(o["boarded"]), str(n["boarded"]), str(o["alighted"]),
+            str(n["alighted"]), note,
         )
     console.print(table)
     return changed

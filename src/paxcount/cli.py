@@ -14,7 +14,7 @@ from .core.trackdata import cache_path
 from .core.types import RunResult
 from .core.video import probe
 from .core.writer import write_run
-from .doors import is_manual, load_config, save_config
+from .doors import is_manual, load_config, markup_state, save_config
 from .runlog import setup_logger
 from .settings import (
     DETECTOR, OUT_DIR, TRUTH_PATH, ZONE_FRACTION_MAX, ZONE_FRACTION_MIN,
@@ -58,7 +58,7 @@ def info(target: Path | None = typer.Argument(None)) -> None:
         table.add_row(
             video.name, f"{meta.width}x{meta.height}", f"{meta.fps:.2f}",
             f"{meta.duration_s:.1f} с",
-            "ручная" if is_manual(video) else "авто",
+            markup_state(video),
             "есть" if cache_path(video).exists() else "нет",
         )
     console.print(table)
