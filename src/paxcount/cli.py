@@ -16,7 +16,10 @@ from .core.video import probe
 from .core.writer import write_run
 from .doors import is_manual, load_config, save_config
 from .runlog import setup_logger
-from .settings import DETECTOR, OUT_DIR, TRUTH_PATH, VIDEO_DIR, DetectorSettings, videos_in
+from .settings import (
+    DETECTOR, OUT_DIR, TRUTH_PATH, VIDEO_DIR, ZONE_FRACTION_MAX, ZONE_FRACTION_MIN,
+    ZONE_MIN_BOTTOM, ZONE_MIN_TOP, DetectorSettings, videos_in,
+)
 from .tracking import get_tracks
 
 app = typer.Typer(add_completion=False, help="Подсчёт пассажиропотока по видео.")
@@ -24,20 +27,6 @@ console = Console()
 log = setup_logger("cli")
 
 BACKENDS = ("custom", "sv_linezone")
-
-# Границы вертикальной полосы дверной зоны в долях высоты рамки ТС.
-#
-# Зона в режиме `zone` описывает не высоту дверного проёма, а полосу, где может
-# находиться ТОЧКА ОПОРЫ человека — ноги. Замер по 15 роликам (7116 наблюдений
-# людей у корпуса): ноги в 90% случаев ниже 0.66 высоты рамки, медиана 1.12
-# (люди ближе к камере, чем ТС, оказываются ниже его рамки).
-#
-# Низ: 0.95, а не 1.0 — у линейных дверей на платформе (04) порог двери реально
-# лежит внутри рамки состава, и требовать «ниже колёс» там неверно.
-# Верх: 0.60 — выше начинается салон, и зона ловит пассажиров, видимых сквозь
-# дверь: они дают ложные события (см. README, «Полоса ног, а не дверной проём»).
-ZONE_MIN_BOTTOM = 0.95
-ZONE_MIN_TOP = 0.60
 
 
 def _make_backend(name: str):
@@ -148,9 +137,10 @@ def check(target: Path = typer.Argument(VIDEO_DIR), truth: Path = typer.Option(T
                 x0, y0, x1, y1 = d.zone
                 if not (x0 < x1 and y0 < y1):
                     problems.append(f"{zone.name}: дверь {d.door_id} — zone не x0<x1, y0<y1")
-                if any(v < -0.5 or v > 1.5 for v in d.zone):
+                if any(v < ZONE_FRACTION_MIN or v > ZONE_FRACTION_MAX for v in d.zone):
                     problems.append(
-                        f"{zone.name}: дверь {d.door_id} — доля zone вне [-0.5, 1.5] "
+                        f"{zone.name}: дверь {d.door_id} — доля zone вне "
+                        f"[{ZONE_FRACTION_MIN}, {ZONE_FRACTION_MAX}] "
                         f"({d.zone}), похоже на опечатку"
                     )
                 # Счёт привязан к точке опоры человека — ногам на земле, а низ
