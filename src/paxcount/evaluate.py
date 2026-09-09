@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
@@ -9,6 +11,78 @@ from rich.console import Console
 from rich.table import Table
 
 TARGET_ERROR = 0.10  # порог приёмки из плана: суммарная погрешность ≤ 10 %
+
+# Отраслевая практика (VDV 457, по которому проходят приёмку APC-системы
+# европейского транспорта) устроена иначе, чем одна суммарная погрешность, и
+# в двух местах это прямо про наши данные:
+#
+# 1. Главный критерий там — систематическое смещение, а не модуль ошибки.
+#    Разнонаправленные ошибки на сотне остановок гасят друг друга, смещение
+#    накапливается. У нас смещение −40 %: мы всегда недосчитываем, потому что
+#    настраивали систему молчать при неуверенности.
+# 2. Допуск задаётся в пассажирах, а не в процентах: доля остановок, где
+#    ошиблись не больше чем на одного и на двух — «включая остановки, где
+#    посадки и высадки не было». Процент от нулевого эталона неисчислим, а
+#    таких роликов у нас четыре из шести размеченных, и они самые ценные:
+#    проверяют, что система не срабатывает на пустом месте.
+#
+# Пороги ниже — ориентир из стандарта, а не наша приёмка: они установлены для
+# датчиков в дверном проёме, а не для наружной камеры. Служат шкалой, чтобы
+# видеть расстояние до отраслевого уровня.
+VDV_EXACT_SHARE = 0.85  # доля дверных циклов, посчитанных точно
+VDV_WITHIN_1_SHARE = 0.90  # доля остановок с ошибкой не больше ±1 пассажира
+VDV_WITHIN_2_SHARE = 0.97  # то же для ±2
+
+
+@dataclass(frozen=True)
+class CountQuality:
+    """Качество счёта по набору единиц измерения.
+
+    Единица — пара «видео + направление»: эталон размечен по видео, поэтому
+    ближе к «дверному циклу» из стандарта мы пока не подбираемся. Когда эталон
+    станет повизитным, единицей станет визит — сами метрики не изменятся.
+    """
+
+    units: int
+    exact: float  # доля посчитанных точно
+    within_1: float  # доля с ошибкой не больше ±1 пассажира
+    within_2: float  # то же для ±2
+    bias: float  # относительное смещение со знаком: <0 — недосчёт
+    error: float  # суммарная погрешность: сумма модулей ошибок к сумме эталона
+    mae: float  # средняя абсолютная ошибка на единицу
+
+
+def count_quality(pairs: Sequence[tuple[float, float]]) -> CountQuality:
+    """Метрики по парам (насчитано, эталон).
+
+    Функция намеренно не знает ни про pandas, ни про формат прогона: единственный
+    её вход — числа. Так она проверяется тестами без файлов на диске и
+    переиспользуется всюду, где такие пары есть.
+    """
+    if not pairs:
+        nan = float("nan")
+        return CountQuality(0, nan, nan, nan, nan, nan, nan)
+
+    errors = [abs(counted - truth) for counted, truth in pairs]
+    total_true = sum(truth for _, truth in pairs)
+    total_pred = sum(counted for counted, _ in pairs)
+    units = len(pairs)
+
+    # Смещение и погрешность считаются от суммы эталона. Если событий не было
+    # вовсе, обе величины не определены — и выдумывать им значение нельзя:
+    # «ноль ошибок из нуля событий» не означает ни хорошего, ни плохого счёта.
+    # Доли при этом остаются осмысленными, поэтому считаются всегда.
+    relative = float("nan") if total_true == 0 else None
+
+    return CountQuality(
+        units=units,
+        exact=sum(e == 0 for e in errors) / units,
+        within_1=sum(e <= 1 for e in errors) / units,
+        within_2=sum(e <= 2 for e in errors) / units,
+        bias=relative if relative is not None else (total_pred - total_true) / total_true,
+        error=relative if relative is not None else sum(errors) / total_true,
+        mae=sum(errors) / units,
+    )
 
 
 def load_truth(path: Path) -> pd.DataFrame:
@@ -66,26 +140,65 @@ def compare_runs(run_dir: Path, truth_path: Path, console: Console) -> pd.DataFr
     for col in ("бэкенд", "эталон", "насчитано", "ошибок", "погрешность",
                 "смещение", "MAE", "вердикт"):
         summary.add_column(col)
+    quality: dict[str, CountQuality] = {}
     for backend, g in merged.dropna(subset=["boarded_true"]).groupby("backend"):
+        # Единица измерения — пара «видео + направление»: сумма модулей ошибок,
+        # а не разность сумм, иначе перелёт по входу гасит недолёт по выходу и
+        # метрика показывает несуществующую точность.
+        pairs = [(r["boarded"], r["boarded_true"]) for _, r in g.iterrows()]
+        pairs += [(r["alighted"], r["alighted_true"]) for _, r in g.iterrows()]
+        q = count_quality(pairs)
+        quality[backend] = q
+
         total_true = g["boarded_true"].sum() + g["alighted_true"].sum()
         total_pred = g["boarded"].sum() + g["alighted"].sum()
-        # Сумма модулей ошибок, а не разность сумм: иначе перелёт по входу
-        # гасит недолёт по выходу и метрика показывает несуществующую точность.
         errors = g["err_in"].sum() + g["err_out"].sum()
-        mae = errors / max(len(g) * 2, 1)
-        rate = errors / total_true if total_true else float("nan")
-        bias = (total_pred - total_true) / total_true if total_true else float("nan")
         summary.add_row(
             backend, str(int(total_true)), str(int(total_pred)), str(int(errors)),
-            f"{rate:.0%}", f"{bias:+.0%}", f"{mae:.2f}",
-            "[green]проходит[/green]" if rate <= TARGET_ERROR else "[red]не проходит[/red]",
+            f"{q.error:.0%}", f"{q.bias:+.0%}", f"{q.mae:.2f}",
+            "[green]проходит[/green]" if q.error <= TARGET_ERROR
+            else "[red]не проходит[/red]",
         )
     console.print(summary)
     console.print(
         "[dim]погрешность — сумма модулей ошибок к сумме эталона; "
         "смещение показывает, в какую сторону систематически ошибается бэкенд[/dim]"
     )
+
+    _print_tolerance(quality, console)
     return merged
+
+
+def _print_tolerance(quality: dict[str, CountQuality], console: Console) -> None:
+    """Допуск в пассажирах — то, что процентная метрика не измеряет.
+
+    Проценты неисчислимы на роликах с нулевым эталоном, а их у нас четыре из
+    шести размеченных. Здесь они полноценно участвуют: «ничего не произошло, и
+    мы ничего не насчитали» — проверяемый результат, а не пропуск.
+    """
+    if not quality:
+        return
+    table = Table(title="Допуск в пассажирах (шкала VDV 457, не наша приёмка)")
+    for col in ("бэкенд", "единиц", "точно", "±1", "±2"):
+        table.add_column(col)
+
+    def mark(value: float, target: float) -> str:
+        colour = "green" if value >= target else "yellow"
+        return f"[{colour}]{value:.0%}[/{colour}] / {target:.0%}"
+
+    for backend, q in quality.items():
+        table.add_row(
+            backend, str(q.units),
+            mark(q.exact, VDV_EXACT_SHARE),
+            mark(q.within_1, VDV_WITHIN_1_SHARE),
+            mark(q.within_2, VDV_WITHIN_2_SHARE),
+        )
+    console.print(table)
+    console.print(
+        "[dim]единица — пара «видео + направление»; через дробь ориентир VDV 457, "
+        "установленный для датчиков в дверном проёме, а не для наружной камеры: "
+        "это шкала расстояния до отраслевого уровня, а не порог приёмки[/dim]"
+    )
 
 
 def _fmt(value) -> str:
