@@ -158,3 +158,30 @@ def test_real_memory_passes_the_gate():
 @pytest.mark.parametrize("field", ["kind", "authority", "status"])
 def test_vocabularies_are_non_empty(field):
     assert gate_memory.VOCABULARIES[field]
+
+
+# ---- Мелкий клон: проверять нечего, но и врать нельзя ---------------------
+#
+# actions/checkout по умолчанию выгружает одну ревизию. Ссылки на прежние
+# коммиты в такой копии не разрешаются — и гейт сообщал «коммита нет в истории»,
+# что просто неправда: коммит есть, он не выгружен. Ложное обвинение хуже
+# пропуска: оно учит обходить гейт.
+
+
+def test_shallow_clone_does_not_accuse_of_missing_commits(tmp_path, monkeypatch):
+    monkeypatch.setattr(gate_memory, "repo_is_shallow", lambda: True)
+    record = GOOD.replace(
+        '"evidence": ["measurement: 29 / 30 / 29 рамок на кадрах 557-565"]',
+        '"evidence": ["commit:0000000"]',
+    )
+    assert gate_memory.check_record(write(tmp_path, record)) == []
+
+
+def test_full_clone_still_checks_commits(tmp_path, monkeypatch):
+    monkeypatch.setattr(gate_memory, "repo_is_shallow", lambda: False)
+    record = GOOD.replace(
+        '"evidence": ["measurement: 29 / 30 / 29 рамок на кадрах 557-565"]',
+        '"evidence": ["commit:0000000"]',
+    )
+    problems = gate_memory.check_record(write(tmp_path, record))
+    assert any("0000000" in p for p in problems)

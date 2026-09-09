@@ -161,6 +161,21 @@ def check_record(path: Path) -> list[str]:
     return problems
 
 
+def repo_is_shallow() -> bool:
+    """Клон на одну ревизию — обычное состояние в CI.
+
+    ``actions/checkout`` по умолчанию выгружает только HEAD, и ссылки на прежние
+    коммиты в такой копии не разрешаются. Сообщать при этом «коммита нет в
+    истории» — неправда: коммит есть, он не выгружен. Ложное обвинение хуже
+    пропуска, потому что учит обходить гейт.
+    """
+    done = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    return done.stdout.strip() == "true"
+
+
 def _check_links(path: Path, meta: dict) -> list[str]:
     """Ссылки на другие записи и на коммиты.
 
@@ -169,11 +184,14 @@ def _check_links(path: Path, meta: dict) -> list[str]:
     на них, научат обходить, и он перестанет значить что-либо.
     """
     problems: list[str] = []
+    shallow = repo_is_shallow()
     for ref in meta.get("supersedes", []):
         if not list(path.parent.glob(f"{ref}-*.md")):
             problems.append(f"{path.name}: supersedes {ref!r} — такой записи нет")
     for item in meta["evidence"]:
         if str(item).startswith("commit:"):
+            if shallow:
+                continue
             sha = str(item).split(":", 1)[1].strip()
             done = subprocess.run(
                 ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
