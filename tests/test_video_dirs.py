@@ -67,6 +67,18 @@ def test_missing_directory_is_skipped(two_sets):
     assert videos_in(None) == [test / "01_wikimedia.webm"]
 
 
+def test_missing_path_fails_loudly(tmp_path):
+    """Несуществующий путь — ошибка, а не «одно видео с таким именем».
+
+    Раньше `videos_in` возвращала сам путь, и дальше он шёл по конвейеру как
+    видео. На практике это выглядело так: запущенный веб-UI держал в памяти
+    путь к папке, которую переименовали, и вместо понятного сообщения отдавал
+    500 — разбираться приходилось по логам сервера.
+    """
+    with pytest.raises(FileNotFoundError, match="нет такого"):
+        videos_in(tmp_path / "нет-такого-файла.mp4")
+
+
 def test_both_directories_are_ignored_by_git():
     """Кадры содержат лица и номера машин — наружу уходят только числа.
 

@@ -111,4 +111,10 @@ def videos_in(target: Path | None) -> list[Path]:
         return [v for d in VIDEO_DIRS if d.is_dir() for v in videos_in(d)]
     if target.is_dir():
         return sorted(p for p in target.iterdir() if p.suffix.lower() in VIDEO_SUFFIXES)
+    # Несуществующий путь раньше возвращался как «одно видео с таким именем» и
+    # шёл дальше по конвейеру, где падал невнятно. Живой случай: запущенный
+    # веб-UI держал в памяти путь к папке, которую переименовали, и отдавал 500
+    # вместо сообщения о том, чего именно нет.
+    if not target.exists():
+        raise FileNotFoundError(f"нет такого видео или папки: {target}")
     return [target]
