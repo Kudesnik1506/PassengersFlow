@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 from conftest import BUS, zone_spec
+from paxcount.core.types import DoorSpec, Point
+from paxcount.doors import fallback_doors
 from paxcount.settings import ZONE_MIN_BOTTOM, ZONE_MIN_TOP
 from paxcount.zonecount import _inside
 
@@ -71,6 +73,39 @@ def test_zone_top_excludes_passengers_seen_inside_the_saloon():
 def test_absolute_frame_ignores_the_vehicle_box():
     spec = zone_spec((10.0, 20.0, 30.0, 40.0), frame="absolute")
     assert spec.resolve_zone(BUS) == (10.0, 20.0, 30.0, 40.0)
+
+
+def test_default_zone_satisfies_the_gate():
+    """Значение по умолчанию обязано проходить собственную проверку проекта.
+
+    До правки верх дефолтной зоны стоял на 0.33 — при пороге гейта 0.60. На
+    размеченных роликах это не проявлялось: там зоны заданы руками. Но первый
+    же ролик без разметки берёт фолбэк (`doors.fallback_doors`), а он создаёт
+    дверь именно со значением по умолчанию. То есть дефект ждал ровно первую
+    боевую запись.
+    """
+    spec = zone_spec((0.0, 0.65, 1.0, 1.12))  # то, что ожидается по умолчанию
+    default = DoorSpec(line_start=Point(x=0.0, y=1.0), line_end=Point(x=1.0, y=1.0))
+
+    assert default.zone == spec.zone
+    assert default.zone[1] >= ZONE_MIN_TOP
+    assert default.zone[3] >= ZONE_MIN_BOTTOM
+
+
+def test_fallback_door_satisfies_the_gate():
+    """Фолбэк — единственный путь, где значение по умолчанию доходит до счёта."""
+    for door in fallback_doors():
+        assert door.zone[1] >= ZONE_MIN_TOP
+        assert door.zone[3] >= ZONE_MIN_BOTTOM
+
+
+def test_default_zone_covers_the_feet_band_and_not_the_saloon():
+    """Проверка по существу, а не по порогам: кого зона ловит на деле."""
+    default = DoorSpec(line_start=Point(x=0.0, y=1.0), line_end=Point(x=1.0, y=1.0))
+    zone = default.resolve_zone(BUS)
+
+    assert _inside(foot_at(0.97), zone)  # медианная точка опоры вышедшего
+    assert not _inside(foot_at(0.45), zone)  # пассажир в салоне сквозь дверь
 
 
 def test_thresholds_describe_a_non_empty_band():

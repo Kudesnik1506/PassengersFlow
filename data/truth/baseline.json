@@ -28,7 +28,7 @@
     "alighted": 0
   },
   "08_wuppertal_oberbarmen_terminal.webm": {
-    "boarded": 1,
+    "boarded": 0,
     "alighted": 1
   },
   "09_tomaszow_solaris_boarding.ogv": {
@@ -40,11 +40,11 @@
     "alighted": 1
   },
   "11_croydon_bus_stop.webm": {
-    "boarded": 1,
+    "boarded": 0,
     "alighted": 1
   },
   "12_sandy_trax_platform.webm": {
-    "boarded": 1,
+    "boarded": 0,
     "alighted": 0
   },
   "13_salzburg_trolleybus_articulated.webm": {
@@ -52,11 +52,11 @@
     "alighted": 0
   },
   "14_brno_tram_stop.ogv": {
-    "boarded": 1,
-    "alighted": 2
+    "boarded": 0,
+    "alighted": 0
   },
   "15_paris_montparnasse_platform.webm": {
-    "boarded": 8,
-    "alighted": 15
+    "boarded": 1,
+    "alighted": 0
   }
 }
