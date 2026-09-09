@@ -90,13 +90,29 @@ def check(target: Path = typer.Argument(VIDEO_DIR), truth: Path = typer.Option(T
             problems.append(f"{video.name}: {exc}")
 
     if truth.exists():
+        from .evaluate import KNOWN_DOMAINS, unknown_domains
+
         with truth.open(encoding="utf-8") as fh:
-            for row in csv.DictReader(fh):
-                if row["video"] not in names:
-                    problems.append(f"эталон ссылается на отсутствующее видео: {row['video']}")
-                for field in ("boarded", "alighted"):
-                    if not row[field].isdigit():
-                        problems.append(f"эталон: {row['video']} — {field} не число")
+            rows = list(csv.DictReader(fh))
+        for row in rows:
+            if row["video"] not in names:
+                problems.append(f"эталон ссылается на отсутствующее видео: {row['video']}")
+            for field in ("boarded", "alighted"):
+                if not row[field].isdigit():
+                    problems.append(f"эталон: {row['video']} — {field} не число")
+        # Домен делит набор на целевой и отладочный, и опечатка в нём тихо
+        # уводит видео из целевой метрики — той самой, по которой судят
+        # результат. Проверяется тем же кодом, что и в тестах.
+        if rows and "domain" in rows[0]:
+            for row in rows:
+                bad = unknown_domains([row.get("domain", "")])
+                if bad:
+                    problems.append(
+                        f"эталон: {row['video']} — домен {bad.pop()!r}, "
+                        f"допустимы {sorted(KNOWN_DOMAINS)}"
+                    )
+        elif rows:
+            problems.append("эталон: нет колонки domain — метрика по целевому домену не считается")
     else:
         problems.append(f"нет эталона: {truth}")
 

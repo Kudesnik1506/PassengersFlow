@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -85,13 +85,61 @@ def count_quality(pairs: Sequence[tuple[float, float]]) -> CountQuality:
     )
 
 
+# Целевой сценарий — статичная камера на штативе, ТС целиком в кадре (см.
+# «Область применимости» в data/videos/SOURCES.md). Часть набора ему не
+# отвечает: метро Гаосюна 640×480 взято ради плотной толпы, съёмка с рук —
+# заведомо негативный случай. Смешивать их в одну цифру значит оценивать
+# систему по материалу, для которого она не предназначена, и одновременно
+# прятать провалы на целевых сценах за чужими роликами.
+TARGET_DOMAIN = "целевой"
+DEBUG_DOMAIN = "отладочный"
+KNOWN_DOMAINS = frozenset({TARGET_DOMAIN, DEBUG_DOMAIN})
+WHOLE_SET = "весь набор"
+
+
+def unknown_domains(values: Iterable[str]) -> set[str]:
+    """Значения домена, которых быть не должно.
+
+    Опечатка обязана падать, а не заводить третий домен молча: «целевои»
+    вместо «целевой» дал бы лишнюю строку в отчёте, а целевой домен незаметно
+    похудел бы на это видео. Ровно так уже терялись ошибки разметки дверей.
+    """
+    return {str(v) for v in values} - set(KNOWN_DOMAINS)
+
+
+def quality_by_domain(
+    rows: Sequence[tuple[str, float, float]],
+) -> dict[str, CountQuality]:
+    """Метрики по каждому домену плюс общая цифра.
+
+    Вход — тройки (домен, насчитано, эталон). Общая цифра остаётся не для
+    приёмки, а для сопоставимости с прошлыми замерами: по ней принято решений
+    больше, чем стоило, и обрывать ряд посреди работы значит потерять историю.
+    """
+    if not rows:
+        return {}
+    by_domain: dict[str, list[tuple[float, float]]] = {}
+    for domain, counted, truth in rows:
+        by_domain.setdefault(domain, []).append((counted, truth))
+
+    result = {d: count_quality(pairs) for d, pairs in sorted(by_domain.items())}
+    result[WHOLE_SET] = count_quality([(c, t) for _, c, t in rows])
+    return result
+
+
 def load_truth(path: Path) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(
             f"нет эталона: {path}. Создайте его командой paxcount truth-template"
         )
     df = pd.read_csv(path)
-    return df.groupby("video", as_index=False)[["boarded", "alighted"]].sum()
+    totals = df.groupby("video", as_index=False)[["boarded", "alighted"]].sum()
+    # Домен — свойство ролика, а не визита: у видео с несколькими визитами он
+    # один и тот же, поэтому берётся первое значение, а не сумма.
+    if "domain" in df.columns:
+        first = df.groupby("video", as_index=False)["domain"].first()
+        totals = totals.merge(first, on="video", how="left")
+    return totals
 
 
 def collect_runs(run_dir: Path) -> pd.DataFrame:
@@ -166,7 +214,44 @@ def compare_runs(run_dir: Path, truth_path: Path, console: Console) -> pd.DataFr
     )
 
     _print_tolerance(quality, console)
+    _print_domains(merged, console)
     return merged
+
+
+def _print_domains(merged: pd.DataFrame, console: Console) -> None:
+    """Разделение по домену: где мы правда работаем, а где меряем себя чужим.
+
+    Общая цифра усредняет целевые сцены с отладочными и потому не годится ни
+    для одного решения: она хуже, чем есть на целевом домене, и лучше, чем на
+    трудном. Разделение показывает обе, не пряча ни одну.
+    """
+    if "domain" not in merged.columns:
+        return
+    known = merged.dropna(subset=["boarded_true", "domain"])
+    if known.empty:
+        return
+
+    table = Table(title="По домену съёмки")
+    for col in ("бэкенд", "домен", "видео", "единиц", "погрешность", "смещение",
+                "точно", "±1"):
+        table.add_column(col)
+
+    for backend, g in known.groupby("backend"):
+        rows = [(r["domain"], r["boarded"], r["boarded_true"]) for _, r in g.iterrows()]
+        rows += [(r["domain"], r["alighted"], r["alighted_true"]) for _, r in g.iterrows()]
+        videos = g.groupby("domain")["video"].nunique().to_dict()
+        for domain, q in quality_by_domain(rows).items():
+            table.add_row(
+                backend, domain, str(videos.get(domain, g["video"].nunique())),
+                str(q.units), _fmt_ratio(q.error), f"{q.bias:+.0%}",
+                f"{q.exact:.0%}", f"{q.within_1:.0%}",
+            )
+    console.print(table)
+    console.print(
+        f"[dim]целевой домен — статичная камера на штативе, ТС целиком в кадре "
+        f"(см. «Область применимости» в data/videos/SOURCES.md); "
+        f"«{WHOLE_SET}» оставлен для сопоставимости с прошлыми замерами[/dim]"
+    )
 
 
 def _print_tolerance(quality: dict[str, CountQuality], console: Console) -> None:

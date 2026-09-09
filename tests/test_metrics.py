@@ -23,7 +23,13 @@ from __future__ import annotations
 
 import math
 
-from paxcount.evaluate import count_quality
+from paxcount.evaluate import (
+    KNOWN_DOMAINS,
+    TARGET_DOMAIN,
+    count_quality,
+    quality_by_domain,
+    unknown_domains,
+)
 
 
 def test_exact_counts_give_full_shares():
@@ -105,3 +111,68 @@ def test_empty_input_does_not_crash():
 def test_mae_is_per_unit():
     q = count_quality([(7, 12), (5, 5)])
     assert q.mae == 2.5
+
+
+# ---- Разделение по домену -------------------------------------------------
+#
+# Целевой сценарий — статичная камера на штативе, ТС целиком в кадре. Часть
+# набора ему не отвечает: метро Гаосюна 640×480 взято ради плотной толпы,
+# съёмка с рук — заведомо негативный случай. Смешивать их в одну цифру значит
+# оценивать систему по материалу, для которого она не предназначена, и наоборот
+# — прятать провалы на целевых сценах за чужими роликами.
+
+
+def test_domains_are_reported_separately():
+    rows = [
+        (TARGET_DOMAIN, 1, 1),
+        (TARGET_DOMAIN, 0, 0),
+        ("отладочный", 7, 12),
+    ]
+    q = quality_by_domain(rows)
+
+    assert q[TARGET_DOMAIN].units == 2
+    assert q[TARGET_DOMAIN].error == 0.0
+    assert q["отладочный"].error > 0
+
+
+def test_whole_set_is_reported_alongside_domains():
+    """Общая цифра остаётся: она сопоставима с прошлыми замерами."""
+    rows = [(TARGET_DOMAIN, 1, 1), ("отладочный", 7, 12)]
+    q = quality_by_domain(rows)
+    assert "весь набор" in q
+    assert q["весь набор"].units == 2
+
+
+def test_domain_split_can_hide_a_failure_and_that_is_the_point():
+    """Ровно то, ради чего разделение и вводится.
+
+    Идеальный счёт на целевых сценах и провал на отладочных дают среднюю
+    цифру, по которой нельзя принять ни одного решения: она хуже, чем есть на
+    целевом домене, и лучше, чем есть на трудном.
+    """
+    rows = [(TARGET_DOMAIN, 5, 5), (TARGET_DOMAIN, 3, 3), ("отладочный", 0, 10)]
+    q = quality_by_domain(rows)
+
+    assert q[TARGET_DOMAIN].error == 0.0
+    assert q["отладочный"].error == 1.0
+    assert 0.0 < q["весь набор"].error < 1.0
+
+
+def test_empty_rows_give_empty_result():
+    assert quality_by_domain([]) == {}
+
+
+def test_typo_in_domain_is_caught():
+    """Опечатка обязана падать, а не заводить третий домен молча.
+
+    Без проверки «целевои» вместо «целевой» дал бы ещё одну строку в отчёте с
+    одним видео внутри, а целевой домен незаметно похудел бы на это видео.
+    Ровно так уже терялись ошибки разметки дверей.
+    """
+    assert unknown_domains(["целевой", "отладочный"]) == set()
+    assert unknown_domains(["целевои"]) == {"целевои"}
+    assert unknown_domains(["целевой", ""]) == {""}
+
+
+def test_known_domains_include_the_target_one():
+    assert TARGET_DOMAIN in KNOWN_DOMAINS
