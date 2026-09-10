@@ -19,7 +19,6 @@ from ..core.trackdata import cache_path, load
 from ..core.types import DoorSpec, Point, VideoConfig
 from ..core.video import probe
 from ..doors import load_config, save_config
-from ..tracking import get_tracks
 from ..settings import VIDEO_SUFFIXES, videos_in
 from ..visits import build_scene
 
@@ -39,7 +38,9 @@ def _find(stem: str) -> Path:
 
 
 def _tracks(video: Path):
-    path = cache_path(video)
+    from ..settings import detector_for
+
+    path = cache_path(video, detector_for(video))
     if not path.exists():
         raise HTTPException(
             409, "нет кэша треков. Выполните: paxcount run <видео> --backend custom"
@@ -57,7 +58,9 @@ def api_videos() -> JSONResponse:
     rows = []
     for p in _videos():
         meta = probe(p)
-        cached = cache_path(p).exists()
+        from ..settings import detector_for
+
+        cached = cache_path(p, detector_for(p)).exists()
         from ..doors import config_path
 
         cfg_path = config_path(p)
@@ -213,7 +216,10 @@ def api_propose(stem: str, method: str = "pixels") -> JSONResponse:
 @app.post("/api/run/{stem}")
 def api_run(stem: str) -> JSONResponse:
     video = _find(stem)
-    data, _, _ = get_tracks(video)
+    # `_tracks`, а не `get_tracks` напрямую: боевая запись без кэша не должна
+    # запускать детекцию внутри HTTP-запроса — на многочасовом видео это
+    # блокирующий запрос на часы. 409 говорит человеку сделать это явно.
+    data = _tracks(video)
     cfg = load_config(video)
     result = CustomBackend().run(data, cfg)
     return JSONResponse(

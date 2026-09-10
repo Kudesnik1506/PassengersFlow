@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,6 +62,19 @@ VIDEO_SUFFIXES = frozenset({".mp4", ".webm", ".ogv", ".mov", ".avi", ".mkv"})
 # Порог приёмки из плана: суммарная погрешность по входу и выходу.
 TARGET_ERROR = 0.10
 
+# Настройки пакета кадров для счёта мультимодальной моделью (замер 10.09:
+# 12 тыс. токенов/с видео при 5 к/с и полном кадре; кроп по ТС и снижение
+# частоты — первые дешёвые рычаги, см. docs/decisions/020).
+PACKAGE_FPS = 5.0
+PACKAGE_MAX_WIDTH = 960.0
+# Формула токенов на изображение из документации Claude Vision:
+# токены ≈ (ширина × высота) / 750.
+TOKENS_PER_PIXEL_DIVISOR = 750.0
+# Ниже этой высоты (px) человек на кропе неразличим — это задача камеры или
+# кадрирования, не задача точности модели. Такие визиты помечаются под
+# проверку человеком, а не тихо считаются как обычно.
+MIN_PERSON_PX = 25.0
+
 
 @dataclass(frozen=True)
 class DetectorSettings:
@@ -81,6 +95,57 @@ class DetectorSettings:
 
 
 DETECTOR = DetectorSettings()
+
+# Боевая запись может идти часами. Полный stride=1 там — часы детекции внутри
+# обычного `git push`, потому что гейты (doors jitter, baseline) вызываются на
+# каждый push автоматически. stride входит в DetectorSettings.tag() и потому в
+# ключ кэша (core/trackdata.cache_path), поэтому боевой и тестовый кэш не
+# путаются между собой.
+PROD_STRIDE = 3
+
+
+def detector_for(video: Path) -> DetectorSettings:
+    """Настройки детектора для конкретного видео — единственный их источник.
+
+    Разъехавшиеся копии этого выбора (одно место читает кэш с одним stride,
+    другое — с другим) и есть тот дефект, из-за которого гейт публикации решил
+    бы, что кэша нет, и запустил детекцию заново поверх уже готового кэша.
+    """
+    if _is_under(video, PROD_VIDEO_DIR):
+        return dataclasses.replace(DETECTOR, stride=PROD_STRIDE)
+    return DETECTOR
+
+
+def _is_under(path: Path, directory: Path) -> bool:
+    try:
+        return path.resolve().is_relative_to(directory.resolve())
+    except (OSError, ValueError):
+        return False
+
+
+def cache_ready(video: Path) -> bool:
+    """Готов ли кэш под настройки, которые получит именно это видео.
+
+    Несуществующий файл кэша заведомо не имеет: `content_hash` внутри
+    `cache_path` требует прочитать файл и упал бы там, где ответ и так ясен.
+    """
+    if not video.exists():
+        return False
+    from .core.trackdata import cache_path
+
+    return cache_path(video, detector_for(video)).exists()
+
+
+def prod_cache_missing(video: Path) -> bool:
+    """Боевая запись без готового кэша.
+
+    Гейты вызываются автоматически на каждый push — если для боевой записи
+    кэша ещё нет, они не должны САМИ запускать детекцию: на многочасовом видео
+    это часы работы внутри обычного git push. Тестовые ролики сюда не попадают:
+    они малы, и первый прогон на них — ожидаемая часть обычной работы, а не
+    риск, от которого нужно защищаться.
+    """
+    return _is_under(video, PROD_VIDEO_DIR) and not cache_ready(video)
 
 
 @dataclass(frozen=True)

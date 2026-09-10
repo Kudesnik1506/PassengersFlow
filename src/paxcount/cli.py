@@ -359,6 +359,48 @@ def diagnose(
     run_diagnose(data, load_config(video), console, door=door)
 
 
+@app.command()
+def windows(target: Path | None = typer.Argument(None)) -> None:
+    """Окна активности и оценка бюджета на модель — без записи кадров.
+
+    Сухой прогон: печатает границы окна на каждый визит (по той же логике,
+    что и настоящий счёт — activity_window), оценку токенов и предупреждения
+    (мелкие люди, пересечение с другим визитом). Ничего не пишет на диск —
+    следующий шаг, запись кадров в пакет, отдельная команда.
+    """
+    from .settings import MIN_PERSON_PX, detector_for
+    from .visits import build_scene
+    from .windows import build_windows
+
+    table = Table(title="Окна счёта")
+    for col in ("видео", "визит", "t0", "t1", "длина, с", "кадров@5fps",
+                "токены (оценка)", "рост человека, px", "предупреждения"):
+        table.add_column(col)
+
+    total_tokens = 0
+    for video in videos_in(target):
+        data, _, _ = get_tracks(video, settings=detector_for(video))
+        cfg = load_config(video)
+        scene = build_scene(data, cfg)
+        for w in build_windows(data, cfg, scene):
+            total_tokens += w.tokens_estimate()
+            warnings = []
+            if w.overlap:
+                warnings.append("[yellow]пересекается с другим визитом[/yellow]")
+            if w.person_px is not None and w.person_px < MIN_PERSON_PX:
+                warnings.append(f"[yellow]мелко: {w.person_px:.0f}px[/yellow]")
+            if w.person_px is None:
+                warnings.append("[dim]людей в окне не найдено[/dim]")
+            table.add_row(
+                video.name, str(w.visit_id), f"{w.t0:.1f}", f"{w.t1:.1f}",
+                f"{w.duration:.1f}", str(w.n_frames()), str(w.tokens_estimate()),
+                f"{w.person_px:.0f}" if w.person_px is not None else "—",
+                ", ".join(warnings) or "",
+            )
+    console.print(table)
+    console.print(f"итого токенов (оценка, без опознания ТС): {total_tokens:,}".replace(",", " "))
+
+
 doors_app = typer.Typer(help="Автопредложение геометрии дверей.")
 app.add_typer(doors_app, name="doors")
 
@@ -511,11 +553,20 @@ def doors_jitter(target: Path | None = typer.Argument(None)) -> None:
     быть 0px в счёте. Ловит рассинхрон системы координат сразу, без эталона.
     """
     from .diagnose import zone_jitter
+    from .settings import detector_for, prod_cache_missing
     from .visits import build_scene
 
     failed = False
     for video in videos_in(target):
-        data, _, _ = get_tracks(video)
+        if prod_cache_missing(video):
+            # Боевая запись без готового кэша: гейт публикации не должен сам
+            # запускать часы детекции внутри push.
+            console.print(
+                f"[dim]{video.name}: нет кэша, детекция не запускается "
+                "автоматически[/dim]"
+            )
+            continue
+        data, _, _ = get_tracks(video, settings=detector_for(video))
         cfg = load_config(video)
         if not cfg.doors:
             continue

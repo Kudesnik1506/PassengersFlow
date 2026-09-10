@@ -25,12 +25,17 @@ def compute_baseline(target: Path) -> dict[str, dict[str, int]]:
     # лёгкий тестовый набор, который идёт и в CI.
     from .backends.custom import CustomBackend
     from .doors import load_config
-    from .settings import videos_in
+    from .settings import detector_for, prod_cache_missing, videos_in
     from .tracking import get_tracks
 
     out: dict[str, dict[str, int]] = {}
     for video in videos_in(target):
-        data, _, _ = get_tracks(video)
+        if prod_cache_missing(video):
+            # Боевая запись без готового кэша: baseline не должен сам
+            # запускать часы детекции внутри push — это отдельный явный шаг
+            # (`paxcount run <видео> --stride 3`), не побочный эффект гейта.
+            continue
+        data, _, _ = get_tracks(video, settings=detector_for(video))
         cfg = load_config(video)
         result = CustomBackend().run(data, cfg)
         out[video.name] = {"boarded": result.boarded, "alighted": result.alighted}

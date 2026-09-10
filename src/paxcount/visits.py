@@ -56,11 +56,15 @@ class VehicleTrack:
     frames: list[int] = field(default_factory=list)
     times: list[float] = field(default_factory=list)
     boxes: list[np.ndarray] = field(default_factory=list)
+    # Имя класса детектора на каждом кадре (parallel к boxes) — по нему
+    # `matches_class` решает, разрешённое ли это ТС (см. решение ниже).
+    names: list[str] = field(default_factory=list)
 
-    def add(self, frame_idx: int, ts: float, box: np.ndarray) -> None:
+    def add(self, frame_idx: int, ts: float, box: np.ndarray, name: str = "") -> None:
         self.frames.append(frame_idx)
         self.times.append(ts)
         self.boxes.append(box)
+        self.names.append(name)
 
     def area(self) -> float:
         if not self.boxes:
@@ -193,9 +197,31 @@ def pick_primary(tracks: dict[int, VehicleTrack]) -> VehicleTrack | None:
 def vehicle_tracks(data: TrackData) -> dict[int, VehicleTrack]:
     tracks: dict[int, VehicleTrack] = {}
     for f in data.frames:
-        for tid, box in zip(f.vehicle_ids, f.vehicle_boxes):
-            tracks.setdefault(int(tid), VehicleTrack(int(tid))).add(f.frame_idx, f.ts, box)
+        for tid, box, name in zip(f.vehicle_ids, f.vehicle_boxes, f.vehicle_names):
+            tracks.setdefault(int(tid), VehicleTrack(int(tid))).add(
+                f.frame_idx, f.ts, box, name
+            )
     return tracks
+
+
+def matches_class(track: VehicleTrack, allowed: list[str]) -> bool:
+    """Большинство детекций трека — из разрешённых классов ТС.
+
+    Без этого фильтра припаркованная у остановки легковушка (класс `car`),
+    занимающая ≥ `min_vehicle_area` кадра, становится «визитом» на часы: у неё
+    нет активности у дверей в нашем смысле, `activity_window` не находит, чем
+    сузить окно, и окно счёта остаётся визитом целиком — на боевой записи это
+    тысячи кадров в пакет модели за одну машину, которая никого не везёт.
+
+    Порог — большинство, а не «хоть один разрешённый кадр»: детектор иногда
+    путает класс на паре кадров при смене ракурса, и это не повод рвать трек.
+    Пустой список разрешённых классов означает «без фильтра» — так же, как
+    `VideoConfig.doors_for` при пустом `door_sets` берёт `doors` без разбора.
+    """
+    if not allowed or not track.names:
+        return True
+    matches = sum(1 for n in track.names if n in allowed)
+    return matches / len(track.names) >= 0.5
 
 
 def track_boxes(
@@ -460,6 +486,7 @@ def build_scene(data: TrackData, config: VideoConfig) -> Scene:
         tid: track_boxes(t, data, fps)
         for tid, t in tracks.items()
         if area_share(t, frame_area) >= config.min_vehicle_area
+        and matches_class(t, config.vehicle_classes)
     }
     found: list[tuple[VehicleTrack, VehicleVisit]] = []
     for tid, raw in raw_by_track.items():

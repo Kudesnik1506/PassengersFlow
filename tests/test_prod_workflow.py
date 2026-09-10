@@ -81,3 +81,99 @@ def test_markup_state_distinguishes_three_cases(tmp_path, monkeypatch):
     assert markup_state(tmp_path / "manual.webm") == "ручная"
     assert markup_state(tmp_path / "auto.webm") == "авто"
     assert markup_state(tmp_path / "nothing.webm") == "фолбэк"
+
+
+# ---- Боевая запись без кэша не должна запускать детекцию из гейтов --------
+#
+# Гейты (`doors jitter`, `baseline`) вызываются автоматически на каждый push.
+# Девятичасовая запись без готового кэша, случайно попавшая в data/prod_videos,
+# не должна САМА запустить детекцию внутри обычного `git push` — это часы
+# работы там, где ожидались секунды.
+
+
+def test_prod_video_gets_reduced_stride():
+    from paxcount.settings import DETECTOR, PROD_STRIDE, PROD_VIDEO_DIR, detector_for
+
+    video = PROD_VIDEO_DIR / "2026-09-10_stop.mp4"
+    assert detector_for(video).stride == PROD_STRIDE
+    assert PROD_STRIDE != DETECTOR.stride
+
+
+def test_test_video_keeps_default_stride():
+    from paxcount.settings import DETECTOR, TEST_VIDEO_DIR, detector_for
+
+    video = TEST_VIDEO_DIR / "01_liaz6213_tyumen_doors_open.webm"
+    assert detector_for(video).stride == DETECTOR.stride
+
+
+def test_prod_stride_changes_cache_key():
+    """Боевой и тестовый кэш не должны путаться: stride входит в tag()."""
+    from paxcount.settings import PROD_VIDEO_DIR, TEST_VIDEO_DIR, detector_for
+
+    prod = detector_for(PROD_VIDEO_DIR / "a.mp4")
+    test = detector_for(TEST_VIDEO_DIR / "a.mp4")
+    assert prod.tag() != test.tag()
+
+
+def test_prod_cache_missing_is_true_only_for_uncached_prod_video(tmp_path, monkeypatch):
+    from paxcount import settings as settings_mod
+
+    prod_dir = tmp_path / "prod_videos"
+    prod_dir.mkdir()
+    test_dir = tmp_path / "test_videos"
+    test_dir.mkdir()
+    monkeypatch.setattr(settings_mod, "PROD_VIDEO_DIR", prod_dir)
+
+    prod_video = prod_dir / "9h.mp4"
+    test_video = test_dir / "01.webm"
+
+    # Ни один физически не существует и кэша ни у кого нет — но предикат
+    # обязан различать боевое видео (пропустить) и тестовое (не его забота).
+    assert settings_mod.prod_cache_missing(prod_video) is True
+    assert settings_mod.prod_cache_missing(test_video) is False
+
+
+def test_baseline_skips_uncached_prod_video(tmp_path, monkeypatch):
+    """`paxcount baseline` не должен сам запускать детекцию на боевой записи
+    без кэша — иначе обычный push однажды превращается в многочасовой прогон."""
+    from paxcount import baseline as baseline_mod
+    from paxcount import settings as settings_mod
+    from paxcount import tracking as tracking_mod
+
+    prod_dir = tmp_path / "prod_videos"
+    prod_dir.mkdir()
+    video = prod_dir / "9h_recording.mp4"
+    video.write_bytes(b"fake-bytes-not-a-real-video")
+
+    monkeypatch.setattr(settings_mod, "PROD_VIDEO_DIR", prod_dir)
+
+    def _boom(*args, **kwargs):
+        raise AssertionError(
+            "детекция не должна запускаться для боевого видео без кэша"
+        )
+
+    monkeypatch.setattr(tracking_mod, "get_tracks", _boom)
+
+    result = baseline_mod.compute_baseline(prod_dir)
+    assert result == {}
+
+
+def test_doors_jitter_skips_uncached_prod_video(tmp_path, monkeypatch):
+    from paxcount import cli as cli_mod
+    from paxcount import settings as settings_mod
+
+    prod_dir = tmp_path / "prod_videos"
+    prod_dir.mkdir()
+    video = prod_dir / "9h_recording.mp4"
+    video.write_bytes(b"fake-bytes-not-a-real-video")
+
+    monkeypatch.setattr(settings_mod, "PROD_VIDEO_DIR", prod_dir)
+
+    def _boom(*args, **kwargs):
+        raise AssertionError(
+            "детекция не должна запускаться для боевого видео без кэша"
+        )
+
+    monkeypatch.setattr(cli_mod, "get_tracks", _boom)
+
+    cli_mod.doors_jitter(prod_dir)  # не должно поднять AssertionError выше
