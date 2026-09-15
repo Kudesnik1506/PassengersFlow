@@ -18,7 +18,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .core.trackdata import TrackData
-from .core.types import VehicleVisit, VideoConfig
+from .core.types import DoorSpec, VehicleVisit, VideoConfig
 from .doors import fallback_doors
 from .settings import PACKAGE_FPS, PACKAGE_MAX_WIDTH, TOKENS_PER_PIXEL_DIVISOR
 from .visits import Scene
@@ -38,7 +38,14 @@ class Window:
     t1: float
     box: tuple[float, float, float, float] | None
     person_px: float | None
-    overlap: bool
+    # Визиты, идущие одновременно с этим. Само по себе не беда: на боевой
+    # остановке 46 % машин делят минуту прибытия с соседней, и слать их все
+    # человеку значит получить очередь в половину смены. Нужно промпту —
+    # сказать модели, какую машину считать, а какую нет.
+    rivals: tuple[int, ...] = ()
+    # Чужой корпус накрывает нашу дверную зону. Вот это уже беда: человек у
+    # чужой двери попадёт в наш счёт, и разобрать это автоматически нечем.
+    contested: bool = False
 
     @property
     def duration(self) -> float:
@@ -48,6 +55,25 @@ class Window:
         if self.duration <= 0:
             return 0
         return max(1, math.ceil(self.duration * fps))
+
+    def review_reasons(self) -> list[str]:
+        """Почему этот визит стоит показать человеку. Пусто — не стоит.
+
+        Живёт в модели, а не в команде CLI: причины нужны и очереди проверки, и
+        отчёту, и промпту. Разъехавшиеся копии этого списка — ровно тот дефект,
+        из-за которого команда `paxcount windows` однажды обратилась к полю,
+        которого уже не было, и ни один тест этого не заметил.
+        """
+        from .settings import MIN_PERSON_PX
+
+        reasons: list[str] = []
+        if self.contested:
+            reasons.append("чужой корпус в дверной зоне")
+        if self.person_px is None:
+            reasons.append("людей в окне не найдено")
+        elif self.person_px < MIN_PERSON_PX:
+            reasons.append(f"мелко: {self.person_px:.0f} px на человека")
+        return reasons
 
     def tokens_estimate(
         self, fps: float = PACKAGE_FPS, max_width: float = PACKAGE_MAX_WIDTH
@@ -109,18 +135,62 @@ def _person_px(data: TrackData, t0: float, t1: float) -> float | None:
     return float(np.median(heights))
 
 
-def _has_overlap(visit: VehicleVisit, others: list[VehicleVisit]) -> bool:
-    """Пересекается ли визит по времени с другим визитом сцены.
+def _rivals(visit: VehicleVisit, others: list[VehicleVisit]) -> tuple[int, ...]:
+    """Визиты, пересекающиеся с этим по времени."""
+    return tuple(
+        other.visit_id
+        for other in others
+        if other.visit_id != visit.visit_id
+        and visit.arrival_ts <= other.departure_ts
+        and other.arrival_ts <= visit.departure_ts
+    )
 
-    Два ТС у остановки одновременно — оба идут в очередь проверки: кроп
-    каждого может задеть другую машину, риск двойного счёта реален, а
-    единственная дешёвая защита сегодня — показать это человеку, а не
-    выяснять автоматически, кто из них кто.
+
+def _boxes_overlap(
+    a: tuple[float, float, float, float], b: tuple[float, float, float, float]
+) -> bool:
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def _door_region(
+    box: tuple[float, float, float, float], specs: list[DoorSpec]
+) -> tuple[float, float, float, float]:
+    """Часть кадра, где стоят ноги входящих и выходящих.
+
+    Считается по тем же зонам, что и сам счёт (принцип 2): помехой признаётся
+    ровно то, что мешает счёту, а не «машины рядом». Зона опускается ниже
+    рамки ТС (низ 1.12 высоты), поэтому область шире самого кузова.
     """
-    for other in others:
-        if other.visit_id == visit.visit_id:
+    regions = [spec.resolve_zone(box) for spec in specs] or [box]
+    return (
+        min(r[0] for r in regions), min(r[1] for r in regions),
+        max(r[2] for r in regions), max(r[3] for r in regions),
+    )
+
+
+def _contested(
+    region: tuple[float, float, float, float],
+    visit: VehicleVisit,
+    rivals: tuple[int, ...],
+    scene: Scene,
+    specs: list[DoorSpec],
+) -> bool:
+    """Накрывает ли чужой корпус нашу дверную зону.
+
+    Одновременность сама по себе счёту не мешает: две машины у разных краёв
+    остановки разводятся кропами. Мешает наложение — тогда человек у чужой
+    двери может попасть в наш счёт, а отличить его автоматически нечем, и
+    визит идёт человеку.
+    """
+    for other in scene.visits:
+        if other.visit_id not in rivals:
             continue
-        if visit.arrival_ts <= other.departure_ts and other.arrival_ts <= visit.departure_ts:
+        other_boxes = scene.boxes_for(other)
+        if not other_boxes:
+            continue
+        arr = np.asarray(list(other_boxes.values()), dtype=float)
+        x0, y0, x1, y1 = np.median(arr, axis=0)
+        if _boxes_overlap(region, (float(x0), float(y0), float(x1), float(y1))):
             return True
     return False
 
@@ -145,14 +215,20 @@ def build_windows(data: TrackData, config: VideoConfig, scene: Scene) -> list[Wi
             aspect = float(np.median(w / h))
         specs = config.doors_for(aspect) or fallback_doors()
         t0, t1 = activity_window(data, specs, visit, boxes_by_frame)
+        window_box = _window_box(boxes_by_frame, data, t0, t1)
+        rivals = _rivals(visit, scene.visits)
+        contested = bool(rivals) and window_box is not None and _contested(
+            _door_region(window_box, specs), visit, rivals, scene, specs
+        )
         windows.append(
             Window(
                 visit_id=visit.visit_id,
                 t0=t0,
                 t1=t1,
-                box=_window_box(boxes_by_frame, data, t0, t1),
+                box=window_box,
                 person_px=_person_px(data, t0, t1),
-                overlap=_has_overlap(visit, scene.visits),
+                rivals=rivals,
+                contested=contested,
             )
         )
     return windows

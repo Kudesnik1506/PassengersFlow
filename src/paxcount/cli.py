@@ -384,13 +384,9 @@ def windows(target: Path | None = typer.Argument(None)) -> None:
         scene = build_scene(data, cfg)
         for w in build_windows(data, cfg, scene):
             total_tokens += w.tokens_estimate()
-            warnings = []
-            if w.overlap:
-                warnings.append("[yellow]пересекается с другим визитом[/yellow]")
-            if w.person_px is not None and w.person_px < MIN_PERSON_PX:
-                warnings.append(f"[yellow]мелко: {w.person_px:.0f}px[/yellow]")
-            if w.person_px is None:
-                warnings.append("[dim]людей в окне не найдено[/dim]")
+            warnings = [f"[yellow]{r}[/yellow]" for r in w.review_reasons()]
+            if w.rivals and not w.contested:
+                warnings.append(f"[dim]рядом визит {', '.join(map(str, w.rivals))}[/dim]")
             table.add_row(
                 video.name, str(w.visit_id), f"{w.t0:.1f}", f"{w.t1:.1f}",
                 f"{w.duration:.1f}", str(w.n_frames()), str(w.tokens_estimate()),
