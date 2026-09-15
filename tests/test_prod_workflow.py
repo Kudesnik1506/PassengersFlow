@@ -135,7 +135,14 @@ def test_prod_cache_missing_is_true_only_for_uncached_prod_video(tmp_path, monke
 
 def test_baseline_skips_uncached_prod_video(tmp_path, monkeypatch):
     """`paxcount baseline` не должен сам запускать детекцию на боевой записи
-    без кэша — иначе обычный push однажды превращается в многочасовой прогон."""
+    без кэша — иначе обычный push однажды превращается в многочасовой прогон.
+
+    `paxcount.tracking` тянет torch, которого нет в лёгкой группе `test` —
+    та же причина, по которой `compute_baseline` импортирует его только внутри
+    функции. В CI (``--only-group test``) тест пропускается; в pre-push
+    (``--group test``, полный venv) выполняется по-настоящему.
+    """
+    pytest.importorskip("torch")
     from paxcount import baseline as baseline_mod
     from paxcount import settings as settings_mod
     from paxcount import tracking as tracking_mod
@@ -159,6 +166,9 @@ def test_baseline_skips_uncached_prod_video(tmp_path, monkeypatch):
 
 
 def test_doors_jitter_skips_uncached_prod_video(tmp_path, monkeypatch):
+    """`paxcount.cli` тянет typer, которого нет в лёгкой группе `test` —
+    пропускается в CI, выполняется по-настоящему в pre-push."""
+    pytest.importorskip("typer")
     from paxcount import cli as cli_mod
     from paxcount import settings as settings_mod
 
