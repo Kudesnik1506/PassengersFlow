@@ -272,3 +272,47 @@ def test_side_margin_shrinks_with_the_vehicle():
     )
     far_spec = door_specs(far, side_margin=0.5)[0]
     assert (far_spec.zone[2] - 600.0) * 2 == pytest.approx(near.zone[2] - 600.0)
+
+
+# ---- Привязка полосы ног: кузов или порог двери ------------------------------
+#
+# Полоса ног измерена как 0.65..1.12 высоты кузова — то есть отсчитана от НИЗА
+# КУЗОВА: от 0.35 высоты выше него до 0.12 ниже. Пока автобус снят сбоку и все
+# двери стоят на одной линии, это верно для каждой двери сразу.
+#
+# На угловом ракурсе не так. Замер по боевым визитам: пороги дверей одного
+# автобуса расходятся по высоте кадра на 100-350 px, и у четырёх дверей порог
+# лежит ВЫШЕ полосы — на них приходится 2 входа и 2 выхода эталона из 28.
+# Человек, вышедший в такую дверь и пошедший вдоль борта, в зону не попадает
+# никогда: чтобы попасть, ему надо шагнуть к камере.
+#
+# Запрет 4 не нарушается: зона остаётся полосой ног, а не дверным проёмом.
+# Меняется только то, от чего она отсчитана, — и толщина её та же.
+
+def test_the_band_is_measured_from_the_body_bottom_by_default():
+    """Умолчание — как измерено: полоса отсчитана от низа кузова."""
+    spec = door_specs(layout([(500.0, 380.0, 600.0, 700.0)]), side_margin=0.0)[0]
+    band = DoorSpec.model_fields["zone"].default
+    height = BODY[3] - BODY[1]
+    assert (spec.zone[1], spec.zone[3]) == pytest.approx(
+        (BODY[1] + band[1] * height, BODY[1] + band[3] * height))
+
+
+def test_per_door_band_keeps_its_thickness_and_moves_to_the_sill():
+    """Полоса та же, отсчитана от порога двери, а не от низа кузова."""
+    opening = (500.0, 380.0, 600.0, 700.0)
+    plain = door_specs(layout([opening]), side_margin=0.0)[0]
+    moved = door_specs(layout([opening]), side_margin=0.0, per_door_band=True)[0]
+    thickness = plain.zone[3] - plain.zone[1]
+    assert moved.zone[3] - moved.zone[1] == pytest.approx(thickness)
+    height = BODY[3] - BODY[1]
+    above = (1.0 - DoorSpec.model_fields["zone"].default[1]) * height
+    assert moved.zone[1] == pytest.approx(opening[3] - above)
+
+
+def test_per_door_band_changes_nothing_when_the_sill_is_the_body_bottom():
+    """Дверь до земли — полоса обязана совпасть с нынешней. Иначе это не та же мера."""
+    opening = (500.0, 380.0, 600.0, BODY[3])
+    plain = door_specs(layout([opening]), side_margin=0.0)[0]
+    moved = door_specs(layout([opening]), side_margin=0.0, per_door_band=True)[0]
+    assert moved.zone == pytest.approx(plain.zone)

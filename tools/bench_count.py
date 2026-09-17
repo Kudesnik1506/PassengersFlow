@@ -32,7 +32,8 @@ from rich.table import Table  # noqa: E402
 
 from paxcount.bench.cases import case_from_layout  # noqa: E402
 from paxcount.bench.counting import (  # noqa: E402
-    DETECT_WINDOW_S, VARIANTS, count_doors, door_id, stop_window, variants_for,
+    DETECT_WINDOW_S, DOOR_SIDE_MARGIN, VARIANTS, count_doors, door_id,
+    stop_window, variants_for,
 )
 from paxcount.bench.summary import load_runs, match_row  # noqa: E402
 from paxcount.bench.tracks import tracks_in_windows  # noqa: E402
@@ -59,6 +60,8 @@ def main() -> int:
     parser.add_argument("--out", type=Path, default=OUT_DIR)
     parser.add_argument("--side-margin", type=float, default=None,
                         help="боковой допуск дверной зоны, долями высоты полосы ног")
+    parser.add_argument("--per-door-band", action="store_true",
+                        help="отсчитывать полосу ног от порога каждой двери")
     parser.add_argument("--refresh", action="store_true",
                         help="пересчитать детекцию, не брать кэш окон")
     args = parser.parse_args()
@@ -123,9 +126,10 @@ def main() -> int:
             if layout is None:
                 per_variant[variant] = None
                 continue
+            margin = (DOOR_SIDE_MARGIN if args.side_margin is None
+                       else args.side_margin)
             per_variant[variant] = count_doors(
-                data, layout, window,
-                *([] if args.side_margin is None else [args.side_margin]))
+                data, layout, window, margin, args.per_door_band)
 
         visits.append({
             "№": number,

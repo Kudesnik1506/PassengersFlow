@@ -46,6 +46,11 @@ FOOT_BAND = (_DEFAULT_ZONE[1], _DEFAULT_ZONE[3])
 # 0 → 15 входов из 22, 0.25 → 18 без ложных, 0.5 → 20 с двумя ложными
 # (решение 060). Ложный счёт дороже пропуска — решение 055.
 DOOR_SIDE_MARGIN = 0.25
+# Полоса ног, пересчитанная в отступы от НИЗА КУЗОВА: столько выше него и
+# столько ниже. Та же мера, записанная так, чтобы её можно было отсчитать не
+# только от кузова, но и от порога конкретной двери.
+BAND_ABOVE = 1.0 - FOOT_BAND[0]
+BAND_BELOW = FOOT_BAND[1] - 1.0
 
 
 def door_id(n_from_nose: int) -> str:
@@ -53,7 +58,9 @@ def door_id(n_from_nose: int) -> str:
 
 
 def door_specs(
-    layout: DoorLayout, side_margin: float = DOOR_SIDE_MARGIN,
+    layout: DoorLayout,
+    side_margin: float = DOOR_SIDE_MARGIN,
+    per_door_band: bool = False,
 ) -> list[DoorSpec]:
     """Зоны счёта по разметке визита — в абсолютных пикселях кадра.
 
@@ -64,16 +71,28 @@ def door_specs(
     ``side_margin`` расширяет зону ВБОК на долю высоты полосы ног. Вертикаль он
     не трогает: она измерена по 7116 наблюдениям, а горизонталь — просто
     размеченная ширина проёма, и на боевых записях это бывает 7 пикселей.
+
+    ``per_door_band`` отсчитывает полосу от порога КАЖДОЙ двери, а не от низа
+    кузова. Толщина полосы та же — меняется только точка отсчёта. На боковом
+    ракурсе это ничего не меняет (пороги дверей и низ кузова на одной линии),
+    на угловом пороги расходятся по кадру на сотни пикселей, и часть дверей
+    выпадает из полосы целиком.
     """
     if layout.body_px is None:
         return []
-    top = layout.body_px[1] + FOOT_BAND[0] * (layout.body_px[3] - layout.body_px[1])
-    bottom = layout.body_px[1] + FOOT_BAND[1] * (layout.body_px[3] - layout.body_px[1])
-    margin = side_margin * (bottom - top)
+    height = layout.body_px[3] - layout.body_px[1]
+    body_top = layout.body_px[1] + FOOT_BAND[0] * height
+    body_bottom = layout.body_px[1] + FOOT_BAND[1] * height
+    margin = side_margin * (body_bottom - body_top)
     specs = []
     for door in layout.doors:
         if not door.in_frame or door.opening_px is None:
             continue
+        if per_door_band:
+            sill = door.opening_px[3]
+            top, bottom = sill - BAND_ABOVE * height, sill + BAND_BELOW * height
+        else:
+            top, bottom = body_top, body_bottom
         left = door.opening_px[0] - margin
         right = door.opening_px[2] + margin
         specs.append(DoorSpec(
@@ -146,9 +165,10 @@ def count_doors(
     layout: DoorLayout,
     window: tuple[float, float],
     side_margin: float = DOOR_SIDE_MARGIN,
+    per_door_band: bool = False,
 ) -> dict[str, tuple[int, int]]:
     """Вошло и вышло по каждой двери разметки. Счётчик — боевой, не свой."""
-    specs = door_specs(layout, side_margin)
+    specs = door_specs(layout, side_margin, per_door_band)
     counts = {spec.door_id: (0, 0) for spec in specs}
     if not specs:
         return counts
