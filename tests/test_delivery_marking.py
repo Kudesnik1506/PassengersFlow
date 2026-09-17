@@ -89,3 +89,14 @@ def test_a_field_we_repaired_is_marked():
 def test_nothing_repaired_marks_nothing():
     from paxcount.delivery.marking import marks_for_repair
     assert marks_for_repair(frozenset()) == set()
+
+
+def test_a_duplicate_press_marks_the_whole_row():
+    """Повтор — утверждение обо всей строке, а не о какой-то её графе.
+
+    Лишняя здесь не ячейка, а сама машина: её записали дважды. Покрасить одну
+    графу значило бы сказать, что спорна она, — и отправить искать ошибку в
+    номере или маршруте, где всё верно.
+    """
+    from paxcount.delivery.marking import marks_for_duplicate
+    assert marks_for_duplicate() == set(COLUMNS)

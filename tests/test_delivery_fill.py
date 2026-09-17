@@ -197,3 +197,38 @@ def test_an_empty_cell_is_still_marked_when_it_disagrees(tmp_path):
     assert '<c r="H2"' in xml, "помеченная клетка пишется, даже пустая"
     assert fills_of(book)[style_of(book, "H2")] != "0"
 
+
+
+# ---- Повторные нажатия оператора ---------------------------------------------
+#
+# Дубликаты остаются в книге (решение 075), и путать их с расхождением нельзя:
+# «мы посчитали иначе» и «эту машину записали дважды» — разные сообщения.
+# Проверяется не название цвета, а то, что заливки РАЗНЫЕ: оттенок дело вкуса,
+# неразличимость — дефект.
+
+def rgb_of(path: Path, ref: str) -> str | None:
+    """Цвет заливки клетки: стиль → fillId → цвет."""
+    with zipfile.ZipFile(path) as z:
+        st = z.read("xl/styles.xml").decode("utf-8")
+    fill_id = fills_of(path)[style_of(path, ref)]
+    fills = re.findall(r"<fill>.*?</fill>",
+                        re.search(r"<fills .*?</fills>", st, re.S).group(0), re.S)
+    color = re.search(r'rgb="([0-9A-F]+)"', fills[int(fill_id)])
+    return color.group(1) if color else None
+
+
+def test_a_duplicate_row_is_painted_apart_from_a_disagreement(tmp_path):
+    """Лишняя строка и спор о числе — разные вещи, и цвета разные."""
+    book = fill_template(template(tmp_path / "шаблон.xlsx"), [row(), row()],
+                          tmp_path / "книга.xlsx",
+                          highlight={2: {"H"}}, duplicates={3: {"H"}})
+    assert rgb_of(book, "H2") and rgb_of(book, "H3")
+    assert rgb_of(book, "H2") != rgb_of(book, "H3")
+
+
+def test_a_disagreement_outweighs_the_duplicate_colour(tmp_path):
+    """Клетка в обоих списках красится как расхождение: оно говорит о числе."""
+    book = fill_template(template(tmp_path / "шаблон.xlsx"), [row(), row()],
+                          tmp_path / "книга.xlsx",
+                          highlight={2: {"H"}}, duplicates={2: {"H"}, 3: {"H"}})
+    assert rgb_of(book, "H2") != rgb_of(book, "H3")

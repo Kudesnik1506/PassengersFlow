@@ -51,6 +51,11 @@ DATE_COLUMN = "B"
 # стиля графы плюс заливка. Копией, а не новым стилем: иначе помеченная клетка
 # потеряет выравнивание и формат даты, и видно станет не расхождение, а правку.
 MISMATCH_COLOR = "FFFFE699"
+# Заливка для повторных нажатий оператора. Цвет отдельный, потому что это
+# другое сообщение: не спор о числе, а строка, которую мы считаем лишней
+# (решение 075). Одним цветом с расхождением они сливаются, и читатель книги
+# не отличит «мы посчитали иначе» от «эту машину записали дважды».
+DUPLICATE_COLOR = "FFFFC7CE"
 
 
 def _serial(text: str) -> int:
@@ -73,14 +78,15 @@ def _cell(ref: str, column: str, value: str, style_index: int,
              f"{escape(value)}</t></is></c>")
 
 
-def _row_xml(index: int, values: list[str], marked: set[str],
-              marked_style: dict[int, int]) -> str:
+def _row_xml(index: int, values: list[str], marks: dict[str, str],
+              marked_style: dict[str, dict[int, int]]) -> str:
     cells = []
     for column, value in zip(COLUMNS, values):
         base = STYLES[column]
-        style = marked_style.get(base, base) if column in marked else base
+        color = marks.get(column)
+        style = marked_style.get(color, {}).get(base, base) if color else base
         cells.append(
-            _cell(f"{column}{index}", column, value, style, column in marked))
+            _cell(f"{column}{index}", column, value, style, color is not None))
     return f'<row r="{index}">{"".join(cells)}</row>'
 
 
@@ -96,34 +102,44 @@ def _sheet_target(z: zipfile.ZipFile, name: str) -> str:
     return "xl/" + target.group(1).lstrip("/")
 
 
-def _with_fill(styles: str) -> tuple[str, dict[int, int]]:
-    """Добавляет заливку и по копии каждого нужного стиля. Возвращает карту."""
+def _with_fills(styles: str,
+                 colors: tuple[str, ...]) -> tuple[str, dict[str, dict[int, int]]]:
+    """Добавляет по заливке на цвет и по копии каждого стиля под каждую.
+
+    Возвращает карту «цвет → (нынешний стиль графы → стиль с этой заливкой)».
+    """
     fills = re.search(r'<fills count="(\d+)">(.*?)</fills>', styles, re.S)
-    fill_id = int(fills.group(1))
+    first = int(fills.group(1))
+    painted = "".join(
+        f'<fill><patternFill patternType="solid">'
+        f'<fgColor rgb="{color}"/><bgColor indexed="64"/></patternFill></fill>'
+        for color in colors
+    )
     styles = styles.replace(
         fills.group(0),
-        f'<fills count="{fill_id + 1}">{fills.group(2)}'
-        f'<fill><patternFill patternType="solid">'
-        f'<fgColor rgb="{MISMATCH_COLOR}"/><bgColor indexed="64"/>'
-        f"</patternFill></fill></fills>",
+        f'<fills count="{first + len(colors)}">{fills.group(2)}{painted}</fills>',
         1,
     )
     block = re.search(r'<cellXfs count="(\d+)">(.*?)</cellXfs>', styles, re.S)
     entries = re.findall(r"<xf [^>]*?/>|<xf [^>]*?>.*?</xf>", block.group(2), re.S)
     count = int(block.group(1))
-    added, mapping = [], {}
-    for base in sorted(set(STYLES.values())):
-        clone = entries[base]
-        # fillId ЗАМЕНЯЕТСЯ, а не дописывается: второй такой же атрибут Excel
-        # прочитает по первому, и заливка молча не появится.
-        if 'fillId="' in clone:
-            clone = re.sub(r'fillId="\d+"', f'fillId="{fill_id}"', clone, count=1)
-        else:
-            clone = clone.replace("<xf ", f'<xf fillId="{fill_id}" ', 1)
-        if 'applyFill="1"' not in clone:
-            clone = clone.replace("<xf ", '<xf applyFill="1" ', 1)
-        mapping[base] = count + len(added)
-        added.append(clone)
+    added: list[str] = []
+    mapping: dict[str, dict[int, int]] = {}
+    for n, color in enumerate(colors):
+        fill_id = first + n
+        mapping[color] = {}
+        for base in sorted(set(STYLES.values())):
+            clone = entries[base]
+            # fillId ЗАМЕНЯЕТСЯ, а не дописывается: второй такой же атрибут
+            # Excel прочитает по первому, и заливка молча не появится.
+            if 'fillId="' in clone:
+                clone = re.sub(r'fillId="\d+"', f'fillId="{fill_id}"', clone, count=1)
+            else:
+                clone = clone.replace("<xf ", f'<xf fillId="{fill_id}" ', 1)
+            if 'applyFill="1"' not in clone:
+                clone = clone.replace("<xf ", '<xf applyFill="1" ', 1)
+            mapping[color][base] = count + len(added)
+            added.append(clone)
     styles = styles.replace(
         block.group(0),
         f'<cellXfs count="{count + len(added)}">{block.group(2)}{"".join(added)}</cellXfs>',
@@ -133,11 +149,12 @@ def _with_fill(styles: str) -> tuple[str, dict[int, int]]:
 
 
 def _filled_sheet(xml: str, rows: list[DeliveryRow],
-                   highlight: dict[int, set[str]], marked_style: dict[int, int]) -> str:
+                   marks: dict[int, dict[str, str]],
+                   marked_style: dict[str, dict[int, int]]) -> str:
     """Шапка шаблона остаётся своя, ниже ложатся наши строки."""
     header = re.search(r'<row r="1".*?</row>', xml, re.S)
     body = "".join(
-        _row_xml(i, row_values(row), highlight.get(i, set()), marked_style)
+        _row_xml(i, row_values(row), marks.get(i, {}), marked_style)
         for i, row in enumerate(rows, start=2)
     )
     data = (header.group(0) if header else "") + body
@@ -153,6 +170,7 @@ def fill_template(
     out: Path,
     sheet: str = BLANK_SHEET,
     highlight: dict[int, set[str]] | None = None,
+    duplicates: dict[int, set[str]] | None = None,
 ) -> Path:
     """Пишет книгу по шаблону заказчика. Шаблон не меняется.
 
@@ -160,6 +178,11 @@ def fill_template(
     бланка (со второй) → буквы граф. Помечается клетка, а не строка:
     расхождение бывает в одном поле, и красить из-за него всю машину значит
     обесценить пометку.
+
+    ``duplicates`` — строки повторных нажатий оператора. Цвет у них свой: это
+    не спор о числе, а лишняя строка (решение 075). Клетка, попавшая в оба
+    списка, красится как расхождение: утверждение о числе важнее отметки о
+    лишней строке.
     """
     out.parent.mkdir(parents=True, exist_ok=True)
     if out.resolve() == template.resolve():
@@ -168,13 +191,20 @@ def fill_template(
         part = _sheet_target(src, sheet)
         items = src.infolist()
         payload = {item.filename: src.read(item.filename) for item in items}
-    highlight = highlight or {}
-    marked_style: dict[int, int] = {}
-    if any(highlight.values()):
-        styles, marked_style = _with_fill(payload["xl/styles.xml"].decode("utf-8"))
+    marks: dict[int, dict[str, str]] = {}
+    for index, columns in (duplicates or {}).items():
+        marks.setdefault(index, {}).update({c: DUPLICATE_COLOR for c in columns})
+    for index, columns in (highlight or {}).items():
+        marks.setdefault(index, {}).update({c: MISMATCH_COLOR for c in columns})
+    marked_style: dict[str, dict[int, int]] = {}
+    if any(marks.values()):
+        styles, marked_style = _with_fills(
+            payload["xl/styles.xml"].decode("utf-8"),
+            (MISMATCH_COLOR, DUPLICATE_COLOR),
+        )
         payload["xl/styles.xml"] = styles.encode("utf-8")
     payload[part] = _filled_sheet(
-        payload[part].decode("utf-8"), rows, highlight, marked_style,
+        payload[part].decode("utf-8"), rows, marks, marked_style,
     ).encode("utf-8")
     tmp = out.with_suffix(out.suffix + ".tmp")
     with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as dst:

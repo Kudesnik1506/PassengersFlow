@@ -44,3 +44,13 @@ def marks_for_repair(fields: frozenset[str]) -> set[str]:
     правка перед ним.
     """
     return {FIELD_COLUMN[f] for f in fields if f in FIELD_COLUMN}
+
+
+def marks_for_duplicate() -> set[str]:
+    """Графы строки, которую мы считаем повторным нажатием, — вся строка.
+
+    Лишняя здесь не ячейка, а машина: её записали дважды (решение 075).
+    Покрасить одну графу значило бы сказать, что спорна она, и отправить
+    искать ошибку в номере или маршруте, где всё верно.
+    """
+    return set(COLUMNS)

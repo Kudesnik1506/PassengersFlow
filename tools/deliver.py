@@ -44,7 +44,9 @@ from paxcount.delivery.model import VehicleKind  # noqa: E402
 from paxcount.delivery.reconcile import VisitFacts  # noqa: E402
 from paxcount.delivery.agreement import Agreement, agree  # noqa: E402
 from paxcount.delivery.fill import fill_template  # noqa: E402
-from paxcount.delivery.marking import marks_for, marks_for_repair  # noqa: E402
+from paxcount.delivery.marking import (  # noqa: E402
+    marks_for, marks_for_duplicate, marks_for_repair,
+)
 from paxcount.delivery.model import Occupancy  # noqa: E402
 from paxcount.delivery.operator import (  # noqa: E402
     drop_duplicates, for_stop, read_export,
@@ -174,14 +176,22 @@ def main() -> int:
     # (решение 025): его данные не подменяют наши, а показывают расхождение.
     # Наполненность — исключение: своей модели для неё нет (решение 032).
     # Дубли снимаются до сверки: повторное нажатие — не второй приезд.
-    records = []
+    # Повторные нажатия из книги НЕ выбрасываются (решение 075): они остаются
+    # строками и красятся розовым. Сверка при этом идёт по первым нажатиям —
+    # иначе наша строка могла бы слиться с повтором, а первое нажатие осталось
+    # бы отдельной машиной.
+    records: list = []
+    canonical: list = []
+    duplicate_ids: set[int] = set()
     if args.operator_export is not None:
-        records = drop_duplicates(
-            for_stop(read_export(args.operator_export), args.stop)).kept
+        records = for_stop(read_export(args.operator_export), args.stop)
+        dedup = drop_duplicates(records)
+        canonical = dedup.kept
+        duplicate_ids = {id(r) for r in dedup.dropped}
 
     decoded = []
     for item, row in zip(placed, rows):
-        deal = agree(row, records) if records else Agreement(None, frozenset())
+        deal = agree(row, canonical) if canonical else Agreement(None, frozenset())
         if deal.occupancy:
             row = row.model_copy(update={"occupancy": Occupancy(deal.occupancy)})
         decoded.append(Decoded(
@@ -204,11 +214,12 @@ def main() -> int:
         # Сверка времени пересчитывается с уже измеренной поправкой: общее для
         # смены расхождение часов книга снимает целиком, и помечать им строку
         # значит утверждать расхождение, которого в ней больше нет.
-        decoded = [replace(d, agreement=agree(d.row, records, shift)) for d in decoded]
+        decoded = [replace(d, agreement=agree(d.row, canonical, shift)) for d in decoded]
         entries = merge(decoded, spine, shift=shift, group=args.group,
                          stop=args.stop, operator=args.operator)
         console.print(f"часы камеры впереди часов оператора на {shift}; "
-                       f"за {day:%d.%m.%Y} у оператора {len(spine)} машин, "
+                       f"за {day:%d.%m.%Y} у оператора {len(spine)} записей, "
+                       f"из них повторных нажатий {len(duplicate_ids)}, "
                        f"расшифровано нами {len(decoded)}")
 
     # Строке, которую ещё предстоит расшифровать, называем файл записи.
@@ -224,7 +235,10 @@ def main() -> int:
     # Строка оператора, которую мы не расшифровывали, не красится вовсе: она
     # целиком его, спорить в ней не с чем. Красятся только наши (решение 070).
     highlight: dict[int, set[str]] = {}
+    duplicates: dict[int, set[str]] = {}
     for i, entry in enumerate(entries, start=2):
+        if entry.record is not None and id(entry.record) in duplicate_ids:
+            duplicates[i] = marks_for_duplicate()
         if not entry.decoded:
             # Его строка, но графа, которую мы за него починили, уже наша.
             marks = marks_for_repair(entry.repaired)
@@ -242,7 +256,10 @@ def main() -> int:
     for i, entry in enumerate(entries, start=2):
         row, deal = entry.row, deals.get(id(entry.row))
         if not entry.decoded:
-            verdict, source = "", "[dim]оператор[/dim]"
+            verdict = ""
+            source = ("[magenta]повтор[/magenta]"
+                       if entry.record is not None and id(entry.record) in duplicate_ids
+                       else "[dim]оператор[/dim]")
         else:
             source = "наш счёт"
             if deal is None or deal.record is None:
@@ -268,20 +285,29 @@ def main() -> int:
     not_ours = {i for i, e in enumerate(entries, start=2) if not e.decoded}
     problems = validate(rows)
     bulk: Counter = Counter()
+    expected = 0
     for problem in problems:
         if problem.row in not_ours:
             bulk[problem.field] += 1
+            continue
+        # «ТС встречается дважды» — это и есть помеченные розовым повторы.
+        # Перечислять их поимённо незачем: они в книге намеренно (решение 075).
+        if problem.row == 0 and problem.field == "number" and duplicates:
+            expected += 1
             continue
         where = "вся книга" if problem.row == 0 else f"строка {problem.row}"
         console.print(f"[yellow]{where}, {problem.field}:[/yellow] {problem.message}")
     for field, count in sorted(bulk.items()):
         console.print(f"[dim]нерасшифрованных строк без «{field}»: {count}[/dim]")
+    if expected:
+        console.print(f"[dim]замечаний «ТС дважды в одну минуту»: {expected} — "
+                       "это повторные нажатия оператора, помеченные розовым[/dim]")
 
     args.out.mkdir(parents=True, exist_ok=True)
     name = book_filename(rows, group=args.group, stop=args.stop)
     if args.template is not None:
         written = fill_template(args.template, rows, args.out / name,
-                                 highlight=highlight)
+                                 highlight=highlight, duplicates=duplicates)
     else:
         written = write_rows(args.out / name, rows)
     console.print(f"книга: {written}")
