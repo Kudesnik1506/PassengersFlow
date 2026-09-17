@@ -41,6 +41,9 @@ VERTICAL_RATIO = 0.35
 # роста человека.
 SWITCH_SECONDS = 0.3
 SWITCH_RADIUS = 0.5
+# Сколько кадров трек должен провести в дверной зоне, чтобы считаться прошедшим
+# через неё. Один кадр — это дрожание рамки на границе, а не проход.
+MIN_ZONE_FRAMES = 2
 
 
 @dataclass
@@ -54,6 +57,10 @@ class TrackLife:
     last_box: np.ndarray | None = None
     first_in_zone: bool = False
     last_in_zone: bool = False
+    # Последний кадр трек провёл ВЫШЕ полосы ног и внутри рамки кузова — то
+    # есть в салоне. Признак считается там, где известна геометрия (в
+    # `collect_lives`), а не в `classify`: правило не должно знать про пиксели.
+    last_above_zone: bool = False
     frames: int = 0
     in_zone_frames: int = 0
     anchors: list[tuple[float, float]] = field(default_factory=list)
@@ -65,6 +72,13 @@ class TrackLife:
     # той двери, мимо которой шёл, а не той, в которой исчез.
     door_first: dict[str, int] = field(default_factory=dict)
     door_last: dict[str, int] = field(default_factory=dict)
+    # Когда человек был у двери в первый и последний раз. Этим и датируется
+    # событие: оно происходит у двери, а не тогда, когда детектор потерял трек.
+    # Вошедшего на К2 видно сквозь стекло ещё полминуты после посадки.
+    first_zone_ts: float | None = None
+    last_zone_ts: float | None = None
+    first_zone_frame: int | None = None
+    last_zone_frame: int | None = None
 
 
 def _anchor(box: np.ndarray) -> tuple[float, float]:
@@ -98,22 +112,37 @@ def collect_lives(
     перекрывающихся зонах один человек давал два события. Здесь «в зоне»
     считается по **объединению** зон, а принадлежность конкретной двери
     сохраняется отдельно, в ``door_frames``.
+
+    Границы визита здесь НЕ применяются: жизнь трека собирается по всем
+    кадрам, для которых известна рамка ТС. Окно ограничивает событие, а не
+    историю — этим занимается ``count_zone``. Обрезка истории границей уже
+    стоила счёта: на боевых визитах 4 и 5 несколько треков начинались ровно на
+    границе окна, потому что окно открывается, когда машина УЖЕ встала, а
+    пассажиры к этому моменту стоят у двери. Их «рождение» вычислялось по
+    обрубку, и подошедший снаружи выглядел как возникший в проёме.
+
+    Поведение боевого бэкенда от этого не меняется: `visits.visit_boxes` и так
+    отдаёт рамки только внутри визита, то есть шире набор не становится.
     """
     lives: dict[int, TrackLife] = {}
     zone_specs = [s for s in specs if s.mode == "zone"]
     for f in data.frames:
-        if not (visit.arrival_ts <= f.ts <= visit.departure_ts):
-            continue
         bbox = boxes_by_frame.get(f.frame_idx)
         if bbox is None:
             continue
         box_tuple = tuple(float(v) for v in bbox)
         zones = [(s.door_id, s.resolve_zone(box_tuple)) for s in zone_specs]
+        # Верх полосы ног общий у всех дверей одного кузова: ниже него человек
+        # стоит на земле, выше — уже в салоне.
+        zone_top = min(zone[1] for _, zone in zones) if zones else box_tuple[3]
         for tid, pbox in zip(f.person_ids, f.person_boxes):
             tid = int(tid)
             anchor = _anchor(pbox)
             hits = [door_id for door_id, zone in zones if _inside(anchor, zone)]
             in_zone = bool(hits)
+            above = (not in_zone
+                      and box_tuple[0] <= anchor[0] <= box_tuple[2]
+                      and box_tuple[1] <= anchor[1] < zone_top)
             life = lives.get(tid)
             if life is None:
                 life = TrackLife(
@@ -125,8 +154,15 @@ def collect_lives(
             life.last_frame = f.frame_idx
             life.last_box = pbox
             life.last_in_zone = in_zone
+            life.last_above_zone = above
             life.frames += 1
             life.in_zone_frames += in_zone
+            if in_zone:
+                if life.first_zone_ts is None:
+                    life.first_zone_ts = f.ts
+                    life.first_zone_frame = f.frame_idx
+                life.last_zone_ts = f.ts
+                life.last_zone_frame = f.frame_idx
             life.anchors.append(anchor)
             for door_id in hits:
                 life.door_frames[door_id] = life.door_frames.get(door_id, 0) + 1
@@ -161,6 +197,13 @@ def _leaves_vehicle(life: TrackLife) -> tuple[bool, str]:
     Вышедший из ТС делает шаг наружу: его точка опоры уезжает вниз кадра.
     Прохожий, у которого трек порвался из-за перекрытия, движется вдоль
     корпуса — почти горизонтально. Это и есть разделяющий признак.
+
+    Ослабление до «удаления от проёма в любую сторону» пробовали и отменили
+    (решение 055): на боевом наборе оно дало один настоящий выход и тут же
+    ложный там, где эталон говорит ноль, потому что прохожий вдоль борта и
+    вышедший вдоль борта геометрически совпадают. Возвращать ослабление без
+    нового разделяющего признака бесполезно. Цена, которую мы платим здесь, —
+    выход вдоль борта не засчитывается.
     """
     return _shift_is_outward(life.anchors[:DIRECTION_POINTS], life.first_box, +1)
 
@@ -168,6 +211,24 @@ def _leaves_vehicle(life: TrackLife) -> tuple[bool, str]:
 def _enters_vehicle(life: TrackLife) -> tuple[bool, str]:
     """Идёт ли человек к корпусу перед тем, как пропасть."""
     return _shift_is_outward(life.anchors[-DIRECTION_POINTS:], life.last_box, -1)
+
+
+def _rose_into_cabin(life: TrackLife) -> tuple[bool, str]:
+    """Пришёл ли человек в салон снизу — от двери, а не откуда-то сверху.
+
+    Мера та же, что у остальных признаков направления: смещение в долях роста
+    человека. Считается от начала трека до конца, а не по последним точкам:
+    вошедший останавливается в салоне, и на последних кадрах он неподвижен —
+    по ним его проход неотличим от стояния на месте.
+    """
+    if len(life.anchors) < 3 or life.last_box is None:
+        return False, "мало точек"
+    shift = np.asarray(life.anchors[-1], dtype=float) - np.asarray(
+        life.anchors[0], dtype=float)
+    person_h = max(float(life.last_box[3] - life.last_box[1]), 1.0)
+    if -shift[1] < MIN_SHIFT_RATIO * person_h:
+        return False, "поднялся недостаточно"
+    return True, "ок"
 
 
 def _shift_is_outward(points, box, sign: int) -> tuple[bool, str]:
@@ -263,8 +324,11 @@ def classify(
     born_inside = life.first_in_zone and not _touches_border(life.first_box, width, height)
     died_inside = life.last_in_zone and not _touches_border(life.last_box, width, height)
 
-    born_at_start = life.first_ts - visit.arrival_ts < guard
-    died_at_end = visit.departure_ts - life.last_ts < guard
+    # Запас считается только ВНУТРЬ визита. Отрицательный остаток значит, что
+    # трек начался раньше визита или пережил его, — это полная история, а не
+    # обрыв на границе (решение 052), и глушить по ней событие нельзя.
+    born_at_start = 0.0 <= life.first_ts - visit.arrival_ts < guard
+    died_at_end = 0.0 <= visit.departure_ts - life.last_ts < guard
 
     if died_inside and not died_at_end and not born_inside:
         ok, why = _enters_vehicle(life)
@@ -281,6 +345,13 @@ def classify(
             return direction, f"исчез в зоне двери ({reason})"
         return None, f"вход отклонён: {why}"
     if born_inside and not born_at_start and not died_inside:
+        # Развилка проверяется до выхода: поднявшийся в салон — вход
+        # (решение 053), а не «не событие» из-за того, что шёл не вниз кадра.
+        if life.last_above_zone:
+            ok, why = _rose_into_cabin(life)
+            if ok:
+                return Direction.IN, "ушёл из зоны двери в салон"
+            return None, f"вход отклонён: {why}"
         ok, why = _leaves_vehicle(life)
         return (Direction.OUT, "появился в зоне двери") if ok else (
             None, f"выход отклонён: {why}"
@@ -295,6 +366,15 @@ def classify(
         if in_ok and not out_ok:
             return Direction.IN, "подошёл к двери и пропал"
         return _by_displacement(life)
+    if (life.last_above_zone and life.in_zone_frames >= MIN_ZONE_FRAMES
+            and not born_inside and not died_at_end):
+        # Вошёл, но не пропал: на К2 автобус во весь кадр, и пассажира видно
+        # сквозь стекло уже в салоне. Исчезновение за корпусом — частный
+        # случай входа, а не его определение.
+        ok, why = _rose_into_cabin(life)
+        if ok:
+            return Direction.IN, "ушёл из зоны двери в салон"
+        return None, f"вход отклонён: {why}"
     return None, "нет события"
 
 
@@ -331,6 +411,24 @@ def _is_id_switch(life: TrackLife, others: list[TrackLife], moment: str) -> bool
         if np.hypot(other_anchor[0] - anchor[0], other_anchor[1] - anchor[1]) <= radius:
             return True
     return False
+
+
+def event_moment(life: TrackLife, direction: Direction) -> tuple[float, int]:
+    """Когда и на каком кадре произошло событие этого трека.
+
+    Событие происходит У ДВЕРИ, а не тогда, когда детектор нашёл или потерял
+    человека: вошедшего на К2 видно сквозь стекло ещё полминуты после посадки,
+    и датировать вход смертью трека значило бы вынести событие за окно визита
+    вместе с самим событием. Момент один и тот же для счёта и для разбора —
+    поэтому он живёт здесь, а не в каждом из них своей копией.
+    """
+    if direction is Direction.IN:
+        if life.last_zone_ts is not None and life.last_zone_frame is not None:
+            return life.last_zone_ts, life.last_zone_frame
+        return life.last_ts, life.last_frame
+    if life.first_zone_ts is not None and life.first_zone_frame is not None:
+        return life.first_zone_ts, life.first_zone_frame
+    return life.first_ts, life.first_frame
 
 
 def count_zone(
@@ -371,10 +469,11 @@ def count_zone(
             moment = "death" if direction is Direction.IN else "birth"
             if _is_id_switch(life, all_lives, moment):
                 continue
-            ts = life.last_ts if direction is Direction.IN else life.first_ts
-            frame_idx = (
-                life.last_frame if direction is Direction.IN else life.first_frame
-            )
+            ts, frame_idx = event_moment(life, direction)
+            # История трека берётся целиком, но событие обязано попасть в окно
+            # визита: вошедший в предыдущую машину не наш пассажир.
+            if not (visit.arrival_ts <= ts <= visit.departure_ts):
+                continue
             events.append(
                 PersonEvent(
                     video=data.video, visit_id=visit.visit_id, event_ts=round(ts, 2),
