@@ -348,3 +348,48 @@ def test_the_carry_covers_every_column_not_just_occupancy():
     kept = carried_over(previous, [ours])
     assert set(kept[2]) == empty, "перенесено всё, что у нас пусто"
     assert len(empty) >= 5, f"граф, которые мы не заполняем, должно быть много: {empty}"
+
+
+def test_rows_of_the_previous_book_that_found_no_place_are_named():
+    """Строка прошлой книги не нашлась в новой — её ручной ввод переносить некуда.
+
+    Молчать здесь нельзя: перенос по приметам не сработает, если у машины
+    сменился номер (портал подставил госномер) или маршрут. Данные пропадут
+    ровно так же, как при слепой перезаписи, только теперь незаметно ещё и для
+    нас. Поэтому такие строки называются поимённо.
+    """
+    from paxcount.delivery.fill import orphaned
+
+    previous = [{"C": "6", "D": "56", "G": "38099", "H": "26", "I": "Б"},
+                 {"C": "7", "D": "02", "G": "А000АА00", "H": "50"}]
+    rows = [row(hours=7, minutes=2, route="50", state_number="А000АА00")]
+    lost = orphaned(previous, rows)
+    assert len(lost) == 1, "вторая строка нашлась, первая нет"
+    assert lost[0]["G"] == "38099" and lost[0]["I"] == "Б"
+
+
+def test_a_previous_row_without_content_is_not_worth_naming():
+    """Строка прошлой книги без данных сверх примет — не потеря, а шум в отчёте.
+
+    Данными считается всё, что стоит вне примет: отличить ручной ввод от
+    перенесённого у СГИНУВШЕЙ строки нечем, и осторожность тут дешевле потери.
+    """
+    from paxcount.delivery.fill import orphaned
+
+    previous = [{"C": "6", "D": "56", "G": "38099"}]
+    assert orphaned(previous, [row(hours=7, minutes=2)]) == []
+
+
+def test_the_row_key_ignores_columns_the_customer_may_fill():
+    """Приметы строятся только на том, что пишем МЫ.
+
+    Заказчик вписал маршрут в строку, где мы его не опознали, — и строка
+    перестала узнаваться по приметам, включавшим маршрут. То есть ровно тот
+    ручной ввод, ради которого перенос и заведён, ломал сам перенос.
+    """
+    from paxcount.delivery.fill import carried_over
+
+    previous = [{"C": "6", "D": "59", "G": "А000АА00", "H": "225", "I": "А"}]
+    ours = row(hours=6, minutes=59, route=None, state_number="А000АА00")
+    kept = carried_over(previous, [ours])
+    assert kept == {2: {"H": "225", "I": "А"}}, "узналась, и оба значения на месте"

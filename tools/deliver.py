@@ -45,7 +45,9 @@ from paxcount.delivery.assemble import (  # noqa: E402
 from paxcount.delivery.model import VehicleKind  # noqa: E402
 from paxcount.delivery.reconcile import VisitFacts  # noqa: E402
 from paxcount.delivery.agreement import Agreement, agree  # noqa: E402
-from paxcount.delivery.fill import carried_over, fill_template  # noqa: E402
+from paxcount.delivery.fill import (  # noqa: E402
+    carried_over, fill_template, orphaned,
+)
 from paxcount.delivery.marking import (  # noqa: E402
     marks_for, marks_for_duplicate, marks_for_our_measurement, marks_for_repair,
 )
@@ -235,9 +237,9 @@ def main() -> int:
                         help="спросить госномера у портала по бортовым (сеть, учётка из .env)")
     parser.add_argument("--only-decoded", action="store_true",
                         help="только расшифрованные машины, без ленты всей смены")
-    parser.add_argument("--keep-from", type=Path, default=None,
-                         help="книга, в которой заказчик писал руками: её клетки "
-                               "не затираются пересборкой")
+    parser.add_argument("--book", type=Path, default=None,
+                         help="книга заказчика: читается ради ручного ввода и "
+                               "перезаписывается ею же — копировать руками нельзя")
     parser.add_argument("--out", type=Path, default=OUT_DIR)
     args = parser.parse_args()
 
@@ -389,19 +391,38 @@ def main() -> int:
     # значит и стереть не вправе: наполненность по прибытию мы не считаем
     # вовсе, а в книге она стоит.
     keep: dict = {}
-    previous = args.keep_from if args.keep_from is not None else args.out / name
+    lost: list = []
+    previous = args.book if args.book is not None else args.out / name
     if previous.exists():
-        keep = carried_over(sheet_cells(previous, BLANK_SHEET)[1:], rows)
+        was = sheet_cells(previous, BLANK_SHEET)[1:]
+        keep = carried_over(was, rows)
+        lost = orphaned(was, rows)
         cells = sum(len(v) for v in keep.values())
         console.print(f"перенесено из {previous.name}: {cells} клеток ручного "
                        f"ввода в {len(keep)} строках")
-    if args.template is not None:
-        written = fill_template(args.template, rows, args.out / name,
-                                 highlight=highlight, duplicates=duplicates,
-                                 keep=keep)
-    else:
-        written = write_rows(args.out / name, rows)
-    console.print(f"книга: {written}")
+    for cell in lost:
+        console.print("[red]строка прошлой книги не нашла места: "
+                       + ", ".join(f"{k}={v}" for k, v in sorted(cell.items())) + "[/red]")
+
+    targets = [args.out / name]
+    if args.book is not None:
+        # Книга заказчика перезаписывается ТОЛЬКО когда переносить нечего сверх
+        # найденного: строка, потерявшая приметы, унесёт с собой его ручной ввод,
+        # а восстановить его будет неоткуда (решение 079).
+        if lost:
+            console.print(f"[red]книга заказчика не тронута: {len(lost)} строк "
+                           "прошлой книги не сопоставлены, ручной ввод в них "
+                           "пропал бы[/red]")
+        else:
+            targets.append(args.book)
+    for target in targets:
+        if args.template is not None:
+            written = fill_template(args.template, rows, target,
+                                     highlight=highlight, duplicates=duplicates,
+                                     keep=keep)
+        else:
+            written = write_rows(target, rows)
+        console.print(f"книга: {written}")
     if problems:
         console.print(f"[yellow]правил нарушено: {len(problems)}, из них по "
                        f"нерасшифрованным строкам {sum(bulk.values())}[/yellow]")
