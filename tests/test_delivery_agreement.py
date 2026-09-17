@@ -17,7 +17,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from paxcount.delivery.agreement import agree
 from paxcount.delivery.model import DeliveryRow, VehicleKind, VehicleSize
@@ -97,3 +97,37 @@ def test_the_same_vehicle_hours_later_is_a_different_trip():
     result = agree(ours, [late])
     assert result.record is None, "рейс через два часа — не наша машина"
     assert result.missing and result.occupancy is None
+
+
+# ---- Время сверяется ПОСЛЕ снятия общей поправки -----------------------------
+#
+# Пока книга была выборкой из шести машин, расхождение часов на семь минут было
+# находкой и помечалось у каждой строки. В ленте всей смены (решение 069) оно
+# снято целиком: записи оператора переведены на шкалу камеры измеренной
+# поправкой, и та же пометка стала бы утверждать расхождение там, где его
+# больше нет, — у трёх строк из ста шести.
+#
+# Значение поля `time` поэтому другое: не «часы разошлись» (это про устройства,
+# а не про машину), а «ЭТА машина отстоит от своей записи дальше, чем вся
+# смена». Вот такое расхождение — настоящая аномалия и стоит пометки.
+
+def test_the_time_agrees_once_the_common_shift_is_removed():
+    """Семь минут, общие для всей смены, расхождением этой машины не являются."""
+    record = OperatorRecord(
+        created=datetime(2026, 9, 10, 6, 54, 59), stop="22739", kind="Автобус",
+        route="26", size="Большой", board="1596", occupancy="А", row=2,
+    )
+    result = agree(row(hours=7, minutes=2, board_number="1596"), [record],
+                    shift=timedelta(minutes=7, seconds=18))
+    assert "time" not in result.mismatched
+
+
+def test_a_vehicle_far_off_the_common_shift_still_disagrees():
+    """Машина, выпавшая из общей поправки, — аномалия, и её видно."""
+    record = OperatorRecord(
+        created=datetime(2026, 9, 10, 6, 54, 59), stop="22739", kind="Автобус",
+        route="26", size="Большой", board="1596", occupancy="А", row=2,
+    )
+    result = agree(row(hours=7, minutes=20, board_number="1596"), [record],
+                    shift=timedelta(minutes=7, seconds=18))
+    assert "time" in result.mismatched

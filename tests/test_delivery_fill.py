@@ -196,3 +196,47 @@ def test_an_empty_cell_is_still_marked_when_it_disagrees(tmp_path):
         xml = z.read("xl/worksheets/sheet2.xml").decode("utf-8")
     assert '<c r="H2"' in xml, "помеченная клетка пишется, даже пустая"
     assert fills_of(book)[style_of(book, "H2")] != "0"
+
+
+# ---- Строки, которых мы ещё не расшифровали ----------------------------------
+#
+# Книга — лента всей смены (решение 069), и в ней два разных сорта незаполненного.
+# «Мы посчитали и разошлись с оператором» — одно, «строку знает только оператор,
+# мы её не расшифровывали» — совсем другое. Одним цветом они сливаются, и
+# читатель книги не отличит спор о числе от невыполненной работы.
+#
+# Поэтому цветов два. Проверяется не название цвета, а то, что заливки РАЗНЫЕ:
+# оттенок дело вкуса, а неразличимость — дефект.
+
+def rgb_of(path: Path, ref: str) -> str | None:
+    """Цвет заливки клетки: стиль → fillId → цвет."""
+    with zipfile.ZipFile(path) as z:
+        st = z.read("xl/styles.xml").decode("utf-8")
+    fill_id = fills_of(path)[style_of(path, ref)]
+    fills = re.findall(r"<fill>.*?</fill>", re.search(r"<fills .*?</fills>", st, re.S).group(0), re.S)
+    color = re.search(r'rgb="([0-9A-F]+)"', fills[int(fill_id)])
+    return color.group(1) if color else None
+
+
+def test_a_row_we_did_not_decode_is_painted_apart_from_a_disagreement(tmp_path):
+    """Невыполненная работа и спор о числе — разные вещи, и цвета разные."""
+    book = fill_template(template(tmp_path / "шаблон.xlsx"), [row(), row()],
+                          tmp_path / "книга.xlsx",
+                          highlight={2: {"H"}}, pending={3: {"H"}})
+    assert rgb_of(book, "H2") is not None
+    assert rgb_of(book, "H3") is not None
+    assert rgb_of(book, "H2") != rgb_of(book, "H3")
+
+
+def test_a_disagreement_outweighs_the_pending_colour(tmp_path):
+    """Клетка, попавшая в оба списка, красится как расхождение.
+
+    Расхождение — утверждение о числе, «не расшифровано» — о её отсутствии.
+    Спрятать первое под вторым значит потерять единственную пометку, ради
+    которой сверка и делалась.
+    """
+    book = fill_template(template(tmp_path / "шаблон.xlsx"), [row(), row()],
+                          tmp_path / "книга.xlsx",
+                          highlight={2: {"H"}}, pending={2: {"H"}, 3: {"H"}})
+    assert rgb_of(book, "H2") == rgb_of(book, "H2")
+    assert rgb_of(book, "H2") != rgb_of(book, "H3"), "спор не спрятан под «не сделано»"

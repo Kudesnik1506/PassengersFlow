@@ -73,8 +73,18 @@ def _find(row: DeliveryRow, records: list[OperatorRecord]) -> OperatorRecord | N
     return nearest
 
 
-def agree(row: DeliveryRow, records: list[OperatorRecord]) -> Agreement:
-    """Сверяет строку с выгрузкой. Ничего не правит — только называет."""
+def agree(row: DeliveryRow, records: list[OperatorRecord],
+           shift: timedelta = timedelta(0)) -> Agreement:
+    """Сверяет строку с выгрузкой. Ничего не правит — только называет.
+
+    ``shift`` — насколько часы камеры ушли вперёд от часов оператора, если эта
+    величина уже измерена по смене (`sequence.clock_shift`). Она снимается
+    перед сравнением времён, и поле `time` тогда означает не «часы устройств
+    разошлись» (это свойство смены, а не машины), а «ЭТА машина отстоит от
+    своей записи дальше, чем вся смена». В книге-ленте поправка снята со всех
+    строк сразу, и пометка без её учёта утверждала бы расхождение, которого
+    больше нет.
+    """
     record = _find(row, records)
     if record is None:
         return Agreement(None, frozenset())
@@ -89,6 +99,6 @@ def agree(row: DeliveryRow, records: list[OperatorRecord]) -> Agreement:
         bad.add("size")
     if (row.board_number or "").strip() != record.board.strip():
         bad.add("board")
-    if abs(record.created - _same_day_moment(row, record)) > TIME_TOLERANCE:
+    if abs(record.created + shift - _same_day_moment(row, record)) > TIME_TOLERANCE:
         bad.add("time")
     return Agreement(record, frozenset(bad), occupancy=record.occupancy)

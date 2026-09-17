@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -40,10 +42,16 @@ from paxcount.delivery.assemble import (  # noqa: E402
 )
 from paxcount.delivery.model import VehicleKind  # noqa: E402
 from paxcount.delivery.reconcile import VisitFacts  # noqa: E402
-from paxcount.delivery.agreement import agree  # noqa: E402
+from paxcount.delivery.agreement import Agreement, agree  # noqa: E402
 from paxcount.delivery.fill import fill_template  # noqa: E402
 from paxcount.delivery.model import Occupancy  # noqa: E402
-from paxcount.delivery.operator import for_stop, read_export  # noqa: E402
+from paxcount.delivery.operator import (  # noqa: E402
+    drop_duplicates, for_stop, read_export, shifts,
+)
+from paxcount.delivery.sequence import (  # noqa: E402
+    Decoded, Entry, clock_shift, merge, shift_around,
+)
+from paxcount.delivery.timeline import parse_slot  # noqa: E402
 from paxcount.delivery.validate import validate  # noqa: E402
 from paxcount.delivery.xlsx import write_rows  # noqa: E402
 from paxcount.settings import DATA_DIR, OUT_DIR  # noqa: E402
@@ -58,6 +66,10 @@ FIELD_COLUMN = {"kind": "F", "route": "H", "size": "J", "board": "G"}
 # Графы, которые подтверждал бы оператор, будь у него запись. Когда он молчит,
 # подтверждения нет ни у одной из них — и это не то же самое, что совпадение.
 UNCONFIRMED = {"F", "G", "H", "I", "J"}
+# Графы строки, которую мы ещё не расшифровали. Время переведено с часов
+# оператора, опознание целиком его, счёта нет вовсе — красится всё, что не
+# наше: группа, дата и номер ОП (A, B, E) наши в любой строке.
+PENDING = {"C", "D", "F", "G", "H", "I", "J", "K", "L"}
 
 
 def _kind(text: str | None) -> VehicleKind | None:
@@ -114,6 +126,41 @@ def collect(doors: Path, stop: str) -> list[Visit]:
     return visits
 
 
+# Длиннее 31 минуты регистратор не пишет — замер по 125 боевым файлам трёх
+# камер (`delivery.timeline`). Момент, отстоящий от начала файла дальше, лежит
+# уже не в нём, а в разрыве записи: назвать файл такой строке нечем.
+MAX_SLOT_S = 31 * 60
+
+
+def reference_slots(stop: str, camera: str = "2") -> list:
+    """Куски записи опорной камеры, по времени.
+
+    Нужны, чтобы у строки, которую ещё предстоит расшифровать, стояло имя
+    файла: расшифровщик должен видеть, где эту машину искать, а правило
+    приёмки требует графу N заполненной.
+    """
+    from paxcount.settings import videos_in
+
+    slots = []
+    for path in videos_in(None):
+        try:
+            slot = parse_slot(path.stem)
+        except ValueError:
+            continue
+        if slot.stop == stop and slot.camera == camera:
+            slots.append(slot)
+    return sorted(slots)
+
+
+def video_at(moment, slots) -> str:
+    """Файл, внутри которого лежит момент. Пусто — записи на эту минуту нет."""
+    covering = [s for s in slots if s.start <= moment]
+    if not covering:
+        return ""
+    slot = covering[-1]
+    return slot.name if (moment - slot.start).total_seconds() <= MAX_SLOT_S else ""
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--doors", type=Path, default=DATA_DIR / "truth" / "doors")
@@ -124,6 +171,8 @@ def main() -> int:
                         help="выгрузка оператора: сверка и наполненность")
     parser.add_argument("--template", type=Path, default=None,
                         help="шаблон заказчика: книга пишется по нему, со списками и стилями")
+    parser.add_argument("--only-decoded", action="store_true",
+                        help="только расшифрованные машины, без ленты всей смены")
     parser.add_argument("--out", type=Path, default=OUT_DIR)
     args = parser.parse_args()
 
@@ -132,76 +181,130 @@ def main() -> int:
         console.print("[red]нечего собирать: ни одного визита с разметкой[/red]")
         return 1
 
-    records = clocks.load(DATA_DIR / "clocks" / f"{args.stop}.csv")
-    placed = in_route_order(visits, records)
+    placed = in_route_order(visits, clocks.load(DATA_DIR / "clocks" / f"{args.stop}.csv"))
     rows = book(placed, group=args.group, stop=args.stop, operator=args.operator)
 
     # Сверка с оператором. Он второе независимое свидетельство, а не истина
     # (решение 025): его данные не подменяют наши, а показывают расхождение.
     # Наполненность — исключение: своей модели для неё нет (решение 032).
-    highlight: dict[int, set[str]] = {}
-    agreements = []
+    # Дубли снимаются до сверки: повторное нажатие — не второй приезд.
+    records = []
     if args.operator_export is not None:
-        records = for_stop(read_export(args.operator_export), args.stop)
-        for i, row in enumerate(rows, start=2):
-            result = agree(row, records)
-            agreements.append(result)
-            if result.occupancy:
-                rows[i - 2] = row.model_copy(
-                    update={"occupancy": Occupancy(result.occupancy)})
-            marks = {FIELD_COLUMN[f] for f in result.mismatched if f in FIELD_COLUMN}
-            if "time" in result.mismatched:
-                marks |= {"C", "D"}
-            if result.missing:
-                marks |= UNCONFIRMED
-            elif not result.occupancy:
-                marks.add("I")
-            if marks:
-                highlight[i] = marks
-    else:
-        agreements = [None] * len(rows)
+        records = drop_duplicates(
+            for_stop(read_export(args.operator_export), args.stop)).kept
 
-    table = Table(title="Лента визитов в порядке общей шкалы")
-    for column in ("№", "камера", "своё время", "общая шкала", "маршрут", "номер",
-                    "размер", "запол", "вышло", "зашло", "код", "оператор"):
+    decoded = []
+    for item, row in zip(placed, rows):
+        deal = agree(row, records) if records else Agreement(None, frozenset())
+        if deal.occupancy:
+            row = row.model_copy(update={"occupancy": Occupancy(deal.occupancy)})
+        decoded.append(Decoded(
+            moment=item.reference_ts or item.visit.facts.stop_ts,
+            row=row, agreement=deal,
+        ))
+
+    # Лента всей смены, а не выборка посчитанных машин (решение 069).
+    entries = [Entry(d.moment, d.row, True, d.agreement.record) for d in decoded]
+    if records and not args.only_decoded:
+        shift = clock_shift(decoded)
+        if shift is None:
+            console.print("[red]ни одна машина не нашлась у оператора по борту: "
+                           "поправку часов измерить нечем, лента не собирается[/red]")
+            return 1
+        anchor = next(d.agreement.record for d in decoded if d.agreement.record)
+        backbone = shift_around(shifts(records), anchor.created)
+        # Сверка времени пересчитывается с уже измеренной поправкой: общее для
+        # смены расхождение часов книга снимает целиком, и помечать им строку
+        # значит утверждать расхождение, которого в ней больше нет.
+        decoded = [replace(d, agreement=agree(d.row, records, shift)) for d in decoded]
+        entries = merge(decoded, backbone, shift=shift, group=args.group,
+                         stop=args.stop, operator=args.operator)
+        console.print(f"часы камеры впереди часов оператора на {shift}; "
+                       f"смена оператора: {len(backbone)} машин, "
+                       f"расшифровано нами {len(decoded)}")
+
+    # Строке, которую ещё предстоит расшифровать, называем файл записи.
+    slots = reference_slots(args.stop)
+    entries = [
+        e if e.decoded else replace(
+            e, row=e.row.model_copy(update={"video": video_at(e.moment, slots)}))
+        for e in entries
+    ]
+    rows = [e.row for e in entries]
+    deals = {id(d.row): d.agreement for d in decoded}
+
+    highlight: dict[int, set[str]] = {}
+    pending: dict[int, set[str]] = {}
+    for i, entry in enumerate(entries, start=2):
+        if not entry.decoded:
+            pending[i] = set(PENDING)
+            continue
+        deal = deals.get(id(entry.row))
+        if deal is None or args.operator_export is None:
+            continue
+        marks = {FIELD_COLUMN[f] for f in deal.mismatched if f in FIELD_COLUMN}
+        if "time" in deal.mismatched:
+            marks |= {"C", "D"}
+        if deal.missing:
+            marks |= UNCONFIRMED
+        elif not deal.occupancy:
+            marks.add("I")
+        if marks:
+            highlight[i] = marks
+
+    table = Table(title="Лента смены: строка на каждое ТС, время на шкале камеры")
+    for column in ("строка", "время", "маршрут", "борт", "номер", "размер",
+                    "запол", "вышло", "зашло", "код", "источник", "сверка"):
         table.add_column(column, no_wrap=True)
-    for i, (item, row, deal) in enumerate(zip(placed, rows, agreements), start=1):
-        if deal is None:
-            verdict = "—"
-        elif deal.missing:
-            verdict = "[yellow]записи нет[/yellow]"
-        elif deal.mismatched:
-            verdict = "[yellow]" + ", ".join(sorted(deal.mismatched)) + "[/yellow]"
+    for i, entry in enumerate(entries, start=2):
+        row, deal = entry.row, deals.get(id(entry.row))
+        if not entry.decoded:
+            verdict, source = "", "[dim]оператор[/dim]"
         else:
-            verdict = "сошлось"
+            source = "наш счёт"
+            if deal is None or deal.record is None:
+                verdict = "[yellow]записи нет[/yellow]"
+            elif deal.mismatched:
+                verdict = "[yellow]" + ", ".join(sorted(deal.mismatched)) + "[/yellow]"
+            else:
+                verdict = "сошлось"
         table.add_row(
-            str(i), item.visit.facts.camera,
-            item.visit.facts.stop_ts.strftime("%H:%M:%S"),
-            item.reference_ts.strftime("%H:%M:%S") if item.reference_ts else "—",
-            row.route or "", row.number or "", row.size.value if row.size else "",
+            str(i), entry.moment.strftime("%H:%M:%S"), row.route or "",
+            row.board_number or "", row.number or "",
+            row.size.value if row.size else "",
             row.occupancy.value if row.occupancy else "",
             "N/A" if row.alighted is None else str(row.alighted),
             "N/A" if row.boarded is None else str(row.boarded),
-            str(row.comment or ""), verdict,
+            str(row.comment or ""), source, verdict,
         )
     console.print(table)
 
+    # Замечания приёмки по нерасшифрованным строкам не перечисляются поимённо:
+    # их сотня, и они все об одном — работа не сделана. Поимённо только те,
+    # где мы уже что-то утверждаем.
+    not_ours = {i for i, e in enumerate(entries, start=2) if not e.decoded}
     problems = validate(rows)
+    bulk: Counter = Counter()
     for problem in problems:
+        if problem.row in not_ours:
+            bulk[problem.field] += 1
+            continue
         where = "вся книга" if problem.row == 0 else f"строка {problem.row}"
         console.print(f"[yellow]{where}, {problem.field}:[/yellow] {problem.message}")
+    for field, count in sorted(bulk.items()):
+        console.print(f"[dim]нерасшифрованных строк без «{field}»: {count}[/dim]")
 
     args.out.mkdir(parents=True, exist_ok=True)
     name = book_filename(rows, group=args.group, stop=args.stop)
     if args.template is not None:
         written = fill_template(args.template, rows, args.out / name,
-                                 highlight=highlight)
+                                 highlight=highlight, pending=pending)
     else:
         written = write_rows(args.out / name, rows)
     console.print(f"книга: {written}")
     if problems:
-        console.print(f"[yellow]правил нарушено: {len(problems)} — "
-                       "книга записана, но заказчик её вернёт[/yellow]")
+        console.print(f"[yellow]правил нарушено: {len(problems)}, из них по "
+                       f"нерасшифрованным строкам {sum(bulk.values())}[/yellow]")
     return 0
 
 
