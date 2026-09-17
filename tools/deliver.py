@@ -21,6 +21,7 @@ import json
 import sys
 from collections import Counter
 from dataclasses import replace
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -56,7 +57,8 @@ from paxcount.delivery.operator import (  # noqa: E402
 from paxcount.delivery.sequence import (  # noqa: E402
     Decoded, Entry, backbone, clock_shift, merge,
 )
-from paxcount.delivery.timeline import file_at, parse_slot  # noqa: E402
+from paxcount.delivery.coverage import gaps_of_cameras, with_footage  # noqa: E402
+from paxcount.delivery.timeline import CameraTrack, parse_slot  # noqa: E402
 from paxcount.delivery.validate import validate  # noqa: E402
 from paxcount.delivery.xlsx import write_rows  # noqa: E402
 from paxcount import portal  # noqa: E402
@@ -123,7 +125,7 @@ def collect(doors: Path, stop: str) -> list[Visit]:
 
 
 def reference_slots(stop: str, camera: str = "2") -> list:
-    """Куски записи опорной камеры с ИЗМЕРЕННОЙ длительностью, по времени.
+    """Куски записи камеры с ИЗМЕРЕННОЙ длительностью, по времени.
 
     Нужны, чтобы у строки, которую ещё предстоит расшифровать, стояло имя
     файла: расшифровщик должен видеть, где машину искать. Длительность
@@ -150,6 +152,34 @@ def reference_slots(stop: str, camera: str = "2") -> list:
             if n + 1 < len(found) else seconds
         slots.append(replace(slot, duration_s=to_next, real_duration_s=seconds))
     return slots
+
+
+# Порядок предпочтения камер. Сначала считающие (решение 034: К2 и К3 видят
+# двери), К1 последней — она в счёте не участвует и нужна только как свидетель
+# там, где остальные молчали.
+CAMERA_ORDER = ("2", "3", "1")
+
+
+def camera_tracks(stop: str) -> list[CameraTrack]:
+    """Ленты всех трёх камер с поправкой к общей шкале.
+
+    Поправка берётся на КАМЕРУ, хотя `clocks` хранит её на файл. Допущение
+    названо в `timeline.CameraTrack` и держится на решении 027: смена — одна
+    сплошная запись, нарезанная одними часами. Камера без замера поправки в
+    список не входит вовсе: назвать её файл, не умея перевести время, значит
+    отправить проверяющего не туда.
+    """
+    records = clocks.load(DATA_DIR / "clocks" / f"{stop}.csv")
+    offsets = {r.camera: r.offset_to_k2_s for r in records}
+    out = []
+    for camera in CAMERA_ORDER:
+        if camera not in offsets:
+            console.print(f"[yellow]камера {camera}: поправки часов нет, "
+                           "в книгу её файлы не попадут[/yellow]")
+            continue
+        out.append(CameraTrack(camera=camera, offset_to_k2_s=offsets[camera],
+                                slots=reference_slots(stop, camera)))
+    return out
 
 
 def ask_the_portal(entries: list, stop: str) -> list:
@@ -266,13 +296,15 @@ def main() -> int:
                        f"из них повторных нажатий {len(duplicate_ids)}, "
                        f"расшифровано нами {len(decoded)}")
 
-    # Строке, которую ещё предстоит расшифровать, называем файл записи.
-    slots = reference_slots(args.stop)
-    entries = [
-        e if e.decoded else replace(
-            e, row=e.row.model_copy(update={"video": file_at(e.moment, slots)}))
-        for e in entries
-    ]
+    # Строке, которую ещё предстоит расшифровать, называем файл записи и часы
+    # той камеры, что его сняла. Камер три: К2 теряет 1074 с в главный провал,
+    # а К1 в это время писала без единого разрыва, и молчать об этом значило бы
+    # выдать «не снято» там, где снято другой камерой.
+    tracks = camera_tracks(args.stop)
+    gaps = gaps_of_cameras(tracks)
+    entries = [e if e.decoded else replace(e, row=with_footage(e.row, e.moment,
+                                                                tracks, gaps))
+                for e in entries]
     if args.portal:
         entries = ask_the_portal(entries, args.stop)
 
@@ -285,12 +317,12 @@ def main() -> int:
     for i, entry in enumerate(entries, start=2):
         if entry.record is not None and id(entry.record) in duplicate_ids:
             duplicates[i] = marks_for_duplicate()
-        # Графы, которые мы изменили за оператором, — в любой строке.
-        marks = marks_for_repair(entry.repaired)
+        # Графы, которые мы изменили за оператором, и графы, которых у него
+        # нет вовсе (файл, камера, комментарий), — в ЛЮБОЙ строке: принцип 9
+        # мерит происхождение, а не спор.
+        marks = marks_for_repair(entry.repaired) | marks_for_our_measurement(entry.row)
         if entry.decoded and args.operator_export is not None:
-            # Наш счёт в чужой строке — тоже наше утверждение, и без пометки
-            # его в ленте из трёхсот строк не найти.
-            marks |= marks_for(entry.agreement) | marks_for_our_measurement(entry.row)
+            marks |= marks_for(entry.agreement)
         if marks:
             highlight[i] = marks
 

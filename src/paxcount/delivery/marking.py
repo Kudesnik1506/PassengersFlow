@@ -74,6 +74,9 @@ COMMENT_COLUMN = "M"
 # расхождение, а за происхождение (принцип 9). Полагаться на подпись столбца
 # нельзя: заказчик читает книгу построчно, а не по шапке.
 CAMERA_COLUMN = "P"
+# Графа имени файла тоже наша: у оператора нет ни файла, ни камеры — он жмёт
+# кнопку на остановке. «Машину искать здесь» — наше утверждение целиком.
+VIDEO_COLUMN = "N"
 
 
 def marks_for_our_measurement(row) -> set[str]:
@@ -85,8 +88,12 @@ def marks_for_our_measurement(row) -> set[str]:
     и делается. `None` в счёте — не измерение, а его отсутствие: не метится.
     """
     marks = set(COUNT_COLUMNS) if row.counted else set()
-    if row.comment is not None:
+    # По содержимому графы, а не по коду: разрыв записи попадает туда словами,
+    # кода у него нет, а сказали это всё равно мы.
+    if row.comment_cell:
         marks.add(COMMENT_COLUMN)
     if row.camera_cell:
         marks.add(CAMERA_COLUMN)
+    if row.video:
+        marks.add(VIDEO_COLUMN)
     return marks

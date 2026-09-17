@@ -339,3 +339,109 @@ def test_a_moment_inside_a_recording_gap_has_no_file():
 def test_a_moment_before_the_first_file_has_no_file():
     slots = [parse_slot("2026-09-10 - 07-00-00 - 22739_2 - 01")]
     assert file_at(datetime(2026, 9, 10, 6, 50), slots) == ""
+
+
+# ---- Запись ищется по всем камерам, а не по одной ----------------------------
+#
+# В графу N до сих пор шёл файл только К2. Но К2 теряет 1074 с в главный провал,
+# а К1 в это же время писала без единого разрыва (замер `tools/coverage.py`), и
+# 14 строк книги остались без файла при том, что запись есть. Проверяющему это
+# читается как «не снято», хотя снято другой камерой.
+#
+# Момент приходит на ОБЩЕЙ шкале (ноль — К2, решение 036), а файлы каждой камеры
+# названы по её СОБСТВЕННЫМ часам, поэтому поиск обязан перевести момент в часы
+# камеры. Иначе на К3 (отстаёт на 418 с) будет назван сосед через файл.
+
+
+def track(camera: str, offset_to_k2_s: float, names: list[str], real: float | None = None):
+    from paxcount.delivery.timeline import CameraTrack
+
+    slots = [parse_slot(n) for n in names]
+    if real is not None:
+        slots = [replace(s, real_duration_s=real) for s in slots]
+    return CameraTrack(camera=camera, offset_to_k2_s=offset_to_k2_s, slots=slots)
+
+
+def test_the_reference_camera_answers_when_it_was_recording():
+    from paxcount.delivery.timeline import footage_at
+
+    k2 = track("2", 0.0, ["2026-09-10 - 07-00-00 - 22739_2 - 01"])
+    got = footage_at(datetime(2026, 9, 10, 7, 5), [k2])
+    assert got.camera == "2"
+    assert got.file == "2026-09-10 - 07-00-00 - 22739_2 - 01"
+    assert got.camera_ts == datetime(2026, 9, 10, 7, 5), "часы К2 и есть шкала"
+
+
+def test_another_camera_covers_the_gap_of_the_reference_one():
+    """К2 молчит, К1 пишет — строка получает файл К1, а не пустоту."""
+    from paxcount.delivery.timeline import footage_at
+
+    k2 = track("2", 0.0, ["2026-09-10 - 07-00-00 - 22739_2 - 01"], real=120.0)
+    k1 = track("1", -358.0, ["2026-09-10 - 06-54-02 - 22739_1 - 01"])
+    got = footage_at(datetime(2026, 9, 10, 7, 5), [k2, k1])
+    assert got.camera == "1"
+    assert got.file == "2026-09-10 - 06-54-02 - 22739_1 - 01"
+
+
+def test_the_moment_is_converted_to_the_clock_of_that_camera():
+    """Часы К1 отстают на 358 с: 07:05 общей шкалы — это 06:59:02 на К1.
+
+    Без перевода поиск назвал бы файл по чужим часам, а проверяющий перемотал
+    бы запись на шесть минут мимо машины.
+    """
+    from paxcount.delivery.timeline import footage_at
+
+    k2 = track("2", 0.0, ["2026-09-10 - 07-00-00 - 22739_2 - 01"], real=120.0)
+    k1 = track("1", -358.0, ["2026-09-10 - 06-54-02 - 22739_1 - 01"])
+    assert footage_at(datetime(2026, 9, 10, 7, 5), [k2, k1]).camera_ts == \
+        datetime(2026, 9, 10, 6, 59, 2)
+
+
+def test_a_moment_no_camera_recorded_has_no_footage():
+    """Молчали все — графа остаётся пустой, а не заполняется ближайшим файлом."""
+    from paxcount.delivery.timeline import footage_at
+
+    k2 = track("2", 0.0, ["2026-09-10 - 07-00-00 - 22739_2 - 01"], real=120.0)
+    k1 = track("1", -358.0, ["2026-09-10 - 06-54-02 - 22739_1 - 01"], real=120.0)
+    assert footage_at(datetime(2026, 9, 10, 7, 5), [k2, k1]) is None
+
+
+def test_the_order_of_cameras_is_the_order_of_preference():
+    """Пишут обе — берётся первая в списке: у вызывающего своя политика камер."""
+    from paxcount.delivery.timeline import footage_at
+
+    k2 = track("2", 0.0, ["2026-09-10 - 07-00-00 - 22739_2 - 01"])
+    k1 = track("1", -358.0, ["2026-09-10 - 06-54-02 - 22739_1 - 01"])
+    assert footage_at(datetime(2026, 9, 10, 7, 5), [k1, k2]).camera == "1"
+
+
+# ---- Дыры записи по плоскому списку кусков ------------------------------------
+#
+# `Session.gaps_s` отвечает про одну смену, а книга собирается на сутки: у К2 за
+# день три смены, между ними по два часа, и для строки, попавшей между ними,
+# ответ «записи нет» такой же честный, как внутри разрыва самой смены.
+
+
+def test_a_short_file_before_its_neighbour_makes_a_gap():
+    from paxcount.delivery.timeline import gaps_between
+
+    slots = [replace(parse_slot("2026-09-10 - 07-00-00 - 22739_2 - 01"), real_duration_s=120.0),
+              parse_slot("2026-09-10 - 07-10-00 - 22739_2 - 02")]
+    assert gaps_between(slots) == [(datetime(2026, 9, 10, 7, 2), 480.0)]
+
+
+def test_files_butt_joined_make_no_gap():
+    from paxcount.delivery.timeline import gaps_between
+
+    slots = [replace(parse_slot("2026-09-10 - 07-00-00 - 22739_2 - 01"), real_duration_s=600.0),
+              parse_slot("2026-09-10 - 07-10-00 - 22739_2 - 02")]
+    assert gaps_between(slots) == []
+
+
+def test_an_unmeasured_file_claims_no_gap():
+    """Длительность не измерена — про дыру после файла утверждать нечем."""
+    from paxcount.delivery.timeline import gaps_between
+
+    slots = [parse_slot("2026-09-10 - 07-00-00 - 22739_2 - 01"),
+              parse_slot("2026-09-10 - 07-10-00 - 22739_2 - 02")]
+    assert gaps_between(slots) == []

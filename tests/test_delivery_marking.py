@@ -111,13 +111,18 @@ def test_a_duplicate_press_marks_the_whole_row():
 def test_our_count_is_marked_in_the_operators_row():
     """Счёт — наше измерение, и в книге он обязан быть виден."""
     from paxcount.delivery.marking import marks_for_our_measurement
-    assert marks_for_our_measurement(row()) == {"K", "L"}
+    assert {"K", "L"} <= marks_for_our_measurement(row())
 
 
 def test_a_row_without_a_count_is_not_marked():
-    """Не считали — помечать нечего: N/A не измерение."""
+    """Не считали — графы счёта не метятся: N/A не измерение.
+
+    Прочие наши графы при этом метятся по-прежнему: имя файла и камера
+    вычислены нами и без счёта.
+    """
     from paxcount.delivery.marking import marks_for_our_measurement
-    assert marks_for_our_measurement(row(alighted=None, boarded=None)) == set()
+    marks = marks_for_our_measurement(row(alighted=None, boarded=None))
+    assert "K" not in marks and "L" not in marks
 
 
 def test_the_comment_code_is_ours_too():
@@ -144,3 +149,32 @@ def test_an_empty_camera_reading_is_not_marked():
     """Посадку мы не видели — графа пуста, и красить в ней нечего."""
     from paxcount.delivery.marking import marks_for_our_measurement
     assert "P" not in marks_for_our_measurement(row())
+
+
+def test_the_video_file_name_is_ours_too():
+    """Графы с именем файла у оператора нет — имя вычислили мы (принцип 9).
+
+    В выгрузке нет ни файла, ни камеры: он жмёт кнопку на остановке. Значит
+    графа N — наше утверждение «машину искать здесь», и проверяющий обязан
+    видеть, что оно наше.
+    """
+    from paxcount.delivery.marking import marks_for_our_measurement
+    assert "N" in marks_for_our_measurement(row(video="запись"))
+
+
+def test_an_empty_video_column_is_not_marked():
+    """Записи нет — утверждать нечего, красить нечего."""
+    from paxcount.delivery.marking import marks_for_our_measurement
+    assert "N" not in marks_for_our_measurement(row(video=""))
+
+
+def test_a_note_about_a_recording_gap_is_marked_like_any_other_comment():
+    """Графа комментария метится по СОДЕРЖИМОМУ, а не по коду таблицы 2.
+
+    Разрыв записи попадает в ту же графу словами, кода у него нет — и метка,
+    смотревшая на код, его пропускала. Между тем сказали это мы: у оператора
+    нет ни камер, ни их разрывов.
+    """
+    from paxcount.delivery.marking import marks_for_our_measurement
+    noted = row(comment=None, notes=("разрыв записи камеры 2 07:33:45-07:51:39",))
+    assert "M" in marks_for_our_measurement(noted)

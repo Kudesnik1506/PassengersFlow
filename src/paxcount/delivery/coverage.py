@@ -15,9 +15,18 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from .timeline import Session
+from .model import DeliveryRow
+from .reconcile import notes_for_visit
+from .timeline import CameraTrack, Session, footage_at, gaps_between
+
+
+# Ниже этой длины пропуск между файлами — технический стык, а не разрыв, о
+# котором нужно знать: 2-4 с между кусками у боевых камер обычное дело. Порог
+# живёт здесь, а не в скрипте, потому что им пользуются оба потребителя — и
+# отчёт о покрытии, и графа комментария в книге (принцип 2).
+MIN_GAP_S = 5.0
 
 
 @dataclass(frozen=True)
@@ -67,3 +76,48 @@ def render_report(gaps: list[Gap]) -> str:
         for g in sorted(gaps, key=lambda g: g.start)
     ]
     return "\n".join(lines)
+
+
+def with_footage(row: DeliveryRow, moment: datetime,
+                  cameras: list[CameraTrack], gaps: list[Gap]) -> DeliveryRow:
+    """Строка с записью: имя файла, камера с её часами и причина, если записи нет.
+
+    Файл ищется по ЛЮБОЙ камере, писавшей в этот момент, а не только по опорной:
+    К2 теряет 1074 с в главный провал, К1 в это же время пишет без единого
+    перерыва, и пустая графа читалась бы как «не снято» там, где снято.
+
+    Разрыв называется в комментарии ДАЖЕ ЕСЛИ запись нашлась у другой камеры.
+    Он не перестал быть аномалией оттого, что его закрыли: именно он объясняет
+    проверяющему, почему у соседних строк файлы разных камер, — а заказчик
+    просил аномалию съёмки отражать словами (`reconcile.gap_note`).
+    """
+    notes = notes_for_visit(moment, gaps)
+    found = footage_at(moment, cameras)
+    if found is None:
+        return row.model_copy(update={"video": "", "camera": "",
+                                       "camera_ts": None, "notes": notes})
+    return row.model_copy(update={"video": found.file, "camera": found.camera,
+                                   "camera_ts": found.camera_ts, "notes": notes})
+
+
+def gaps_of_cameras(cameras: list[CameraTrack],
+                     min_gap_s: float = MIN_GAP_S) -> list[Gap]:
+    """Разрывы всех камер, сведённые на общую шкалу и очищенные от стыков.
+
+    На общую шкалу — потому что с ней сверяет проверяющий: время строки и время
+    разрыва обязаны идти в одних часах, иначе «попадает или нет» не прочесть
+    (`reconcile.gap_note`). Число записей оператора внутри здесь не считается:
+    это забота отчёта о покрытии, а в книге разрыв и так стоит рядом со
+    строками, которые в него попали.
+    """
+    out: list[Gap] = []
+    for track in cameras:
+        for start, seconds in gaps_between(track.slots):
+            if seconds < min_gap_s:
+                continue
+            out.append(Gap(
+                camera=track.camera,
+                start=start - timedelta(seconds=track.offset_to_k2_s),
+                duration_s=seconds, operator_records_inside=0,
+            ))
+    return out

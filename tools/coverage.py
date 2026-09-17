@@ -32,7 +32,8 @@ from paxcount.delivery.coverage import gaps_for, render_report  # noqa: E402
 from paxcount.delivery.timeline import sessions_from_names  # noqa: E402
 from paxcount.settings import VIDEO_SUFFIXES  # noqa: E402
 
-MIN_GAP_S = 5.0
+# Порог живёт в модуле: им пользуется и графа комментария в книге.
+from paxcount.delivery.coverage import MIN_GAP_S  # noqa: E402,F401
 
 
 def probe_duration_s(path: Path) -> float:

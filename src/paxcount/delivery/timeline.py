@@ -321,6 +321,74 @@ def sessions_from_names(
 
 
 
+def gaps_between(slots: list[FileSlot]) -> list[tuple[datetime, float]]:
+    """Дыры записи по плоскому списку кусков: (когда началась, сколько секунд).
+
+    `Session.gaps_s` отвечает про одну смену, а книга собирается на сутки
+    (решение 072): у К2 за день три смены с двухчасовыми перерывами между
+    ними, и строке, попавшей в перерыв, нужен тот же ответ, что и строке
+    внутри разрыва смены, — записи нет.
+
+    Кусок без измеренной длительности дыры за собой не заявляет: «не измерено»
+    и «писала без перерыва» — разные вещи (`FileSlot.gap_after_s`).
+    """
+    out: list[tuple[datetime, float]] = []
+    ordered = sorted(slots)
+    for slot, following in zip(ordered, ordered[1:]):
+        if slot.real_duration_s is None:
+            continue
+        ends = slot.at(slot.real_duration_s)
+        seconds = (following.start - ends).total_seconds()
+        if seconds > 0:
+            out.append((ends, seconds))
+    return out
+
+
+@dataclass(frozen=True)
+class CameraTrack:
+    """Лента одной камеры: её куски записи и поправка к общей шкале.
+
+    Поправка та же, что в `clocks.ClockRecord`: `raw − offset = reference`.
+    Здесь она на КАМЕРУ, а не на файл, и это допущение: смена — сплошная лента
+    (решение 027), её куски нарезает одна и та же камера одними и теми же
+    часами. Файл с собственной поправкой в эту картину не укладывается, и
+    такому случаю здесь места нет — он решается таблицей `clocks`.
+    """
+
+    camera: str
+    offset_to_k2_s: float
+    slots: list[FileSlot]
+
+
+@dataclass(frozen=True)
+class Footage:
+    """Запись, в которой лежит момент: чья камера, какой файл, её время."""
+
+    camera: str
+    file: str
+    camera_ts: datetime
+
+
+def footage_at(moment: datetime, cameras: list[CameraTrack]) -> Footage | None:
+    """Первая камера из списка, писавшая в этот момент общей шкалы.
+
+    Порядок списка — политика вызывающего: этот модуль не знает, какая камера
+    предпочтительнее, он знает только, какая писала. `None` — не писал никто,
+    и графа остаётся пустой: назвать соседний файл значило бы отправить
+    проверяющего смотреть не тот кусок записи.
+
+    Момент переводится в часы КАЖДОЙ камеры отдельно. Без перевода на К3,
+    отстающей на 418 с, был бы назван сосед через файл — ошибка тихая, потому
+    что имя файла выглядит правдоподобно.
+    """
+    for track in cameras:
+        raw = moment + timedelta(seconds=track.offset_to_k2_s)
+        name = file_at(raw, track.slots)
+        if name:
+            return Footage(camera=track.camera, file=name, camera_ts=raw)
+    return None
+
+
 def file_at(moment: datetime, slots: list[FileSlot]) -> str:
     """Имя файла, внутри которого лежит момент. Пусто — записи на него нет.
 
