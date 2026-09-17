@@ -63,13 +63,10 @@ console = Console(width=170)
 # Поле сверки → графа бланка. Время занимает две графы, поэтому его здесь нет:
 # оно разворачивается в C и D там, где строится пометка.
 FIELD_COLUMN = {"kind": "F", "route": "H", "size": "J", "board": "G"}
-# Графы, которые подтверждал бы оператор, будь у него запись. Когда он молчит,
-# подтверждения нет ни у одной из них — и это не то же самое, что совпадение.
-UNCONFIRMED = {"F", "G", "H", "I", "J"}
-# Графы строки, которую мы ещё не расшифровали. Время переведено с часов
-# оператора, опознание целиком его, счёта нет вовсе — красится всё, что не
-# наше: группа, дата и номер ОП (A, B, E) наши в любой строке.
-PENDING = {"C", "D", "F", "G", "H", "I", "J", "K", "L"}
+# Помечается только РАСХОЖДЕНИЕ: клетка, где наше значение и значение
+# оператора не сошлись (решение 070). Молчание оператора пометки не даёт —
+# отсутствие записи это не спор о числе, а её отсутствие; то же и со строкой,
+# которую мы ещё не расшифровали: она вся от оператора, спорить в ней не с чем.
 
 
 def _kind(text: str | None) -> VehicleKind | None:
@@ -234,21 +231,13 @@ def main() -> int:
     deals = {id(d.row): d.agreement for d in decoded}
 
     highlight: dict[int, set[str]] = {}
-    pending: dict[int, set[str]] = {}
     for i, entry in enumerate(entries, start=2):
-        if not entry.decoded:
-            pending[i] = set(PENDING)
-            continue
-        deal = deals.get(id(entry.row))
-        if deal is None or args.operator_export is None:
+        deal = deals.get(id(entry.row)) if entry.decoded else None
+        if deal is None or deal.record is None:
             continue
         marks = {FIELD_COLUMN[f] for f in deal.mismatched if f in FIELD_COLUMN}
         if "time" in deal.mismatched:
             marks |= {"C", "D"}
-        if deal.missing:
-            marks |= UNCONFIRMED
-        elif not deal.occupancy:
-            marks.add("I")
         if marks:
             highlight[i] = marks
 
@@ -298,7 +287,7 @@ def main() -> int:
     name = book_filename(rows, group=args.group, stop=args.stop)
     if args.template is not None:
         written = fill_template(args.template, rows, args.out / name,
-                                 highlight=highlight, pending=pending)
+                                 highlight=highlight)
     else:
         written = write_rows(args.out / name, rows)
     console.print(f"книга: {written}")
