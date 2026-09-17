@@ -123,7 +123,7 @@ def test_everything_the_template_carries_survives(tmp_path):
         assert "Служебный лист" in z.read("xl/workbook.xml").decode("utf-8")
         assert z.read("xl/worksheets/sheet1.xml") == \
             zipfile.ZipFile(src).read("xl/worksheets/sheet1.xml")
-    assert 'ref="A1:O2"' in xml, "размер листа пересчитан под число строк"
+    assert 'ref="A1:P2"' in xml, "размер листа пересчитан под число строк и граф"
 
 
 # ---- Подсветка расхождений с оператором --------------------------------------
@@ -232,3 +232,42 @@ def test_a_disagreement_outweighs_the_duplicate_colour(tmp_path):
                           tmp_path / "книга.xlsx",
                           highlight={2: {"H"}}, duplicates={2: {"H"}, 3: {"H"}})
     assert rgb_of(book, "H2") != rgb_of(book, "H3")
+
+
+# ---- Шестнадцатая графа: часы камеры, на которой видна посадка ----------------
+#
+# Шапку шаблона заполнение НЕ переписывает — она заказчика и остаётся его. Но
+# нашей графы в его шапке нет вовсе, и без подписи столбец времён читается как
+# мусор справа от таблицы. Значит подпись дописывается в ту же строку, а не
+# вместо неё.
+
+
+def test_the_extra_column_gets_its_own_header_beside_the_customers(tmp_path):
+    from paxcount.delivery.xlsx import EXTRA_HEADERS
+
+    book = fill_template(template(tmp_path / "шаблон.xlsx"), [row()],
+                          tmp_path / "книга.xlsx")
+    with zipfile.ZipFile(book) as z:
+        xml = z.read("xl/worksheets/sheet2.xml").decode("utf-8")
+    head = re.findall(r'<row r="1".*?</row>', xml, re.S)[0]
+    assert "Группа ОП" in head, "шапка заказчика на месте"
+    assert EXTRA_HEADERS[0] in head, "наша графа подписана"
+
+
+def test_the_camera_reading_is_written_as_text(tmp_path):
+    """«К3 06:58:06» — не число и не время Excel: это адрес, куда перематывать."""
+    from datetime import datetime
+
+    book = fill_template(
+        template(tmp_path / "шаблон.xlsx"),
+        [row(camera="3", camera_ts=datetime(2026, 8, 10, 6, 58, 6))],
+        tmp_path / "книга.xlsx")
+    assert cells(book)["P"] == ("inlineStr", "К3 06:58:06")
+
+
+def test_the_sheet_size_counts_our_column_too(tmp_path):
+    book = fill_template(template(tmp_path / "шаблон.xlsx"), [row()],
+                          tmp_path / "книга.xlsx")
+    with zipfile.ZipFile(book) as z:
+        xml = z.read("xl/worksheets/sheet2.xml").decode("utf-8")
+    assert 'ref="A1:P2"' in xml

@@ -124,3 +124,27 @@ def test_an_unknown_group_does_not_leave_a_hole_in_the_file_name():
     rows = book(in_route_order(visits, RECORDS), group="", stop="22739",
                  operator="Иванов Иван")
     assert book_filename(rows, group="", stop="22739") == "2026-09-10-22739.xlsx"
+
+
+# ---- Часы своей камеры едут рядом с общей шкалой ------------------------------
+#
+# Общая шкала нужна ленте, но проверяющий открывает запись конкретной камеры, и
+# перематывать он будет по ЕЁ часам. Замер по борту 7861 показал, чего стоит
+# эта разница: на часах К3 машина в 06:58:06, на общей шкале — 07:05:04.
+# Перемотав К3 на 07:05:04, проверяющий увидит другую машину.
+
+
+def test_the_book_keeps_the_reading_of_the_camera_that_saw_the_boarding():
+    visits = [Visit(facts("3", "2026-08-10T06:58:06", "26"), K3_FILE)]
+    rows = book(in_route_order(visits, RECORDS), group="1317", stop="22739",
+                 operator="Иванов Иван")
+    assert rows[0].hours == 7 and rows[0].minutes == 5, "в бланке — общая шкала"
+    assert rows[0].camera_cell == "К3 06:58:06", "рядом — часы самой камеры"
+
+
+def test_the_camera_reading_is_not_the_moment_on_the_common_scale():
+    """Подставить сюда общее время значит стереть сам смысл графы."""
+    visits = [Visit(facts("3", "2026-08-10T06:58:06", "26"), K3_FILE)]
+    rows = book(in_route_order(visits, RECORDS), group="1317", stop="22739",
+                 operator="Иванов Иван")
+    assert rows[0].camera_cell != f"К3 0{rows[0].hours}:0{rows[0].minutes}:04"

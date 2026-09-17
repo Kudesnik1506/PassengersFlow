@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 
 from pydantic import BaseModel, Field, field_validator
@@ -121,6 +122,12 @@ class DeliveryRow(BaseModel):
     notes: tuple[str, ...] = ()
     video: str = ""
     operator: str = ""
+    # Камера, на которой видна посадка-высадка, и что показывали ЕЁ часы в этот
+    # момент. Время бланка стоит на общей шкале (решение 036), а перематывать
+    # запись будут по часам самой камеры, и они с общей шкалой не совпадают:
+    # К3 отстаёт от К2 почти на семь минут. Пусто — посадку мы не видели.
+    camera: str = ""
+    camera_ts: datetime | None = None
     # Поля, где мы разошлись с оператором, и чем обосновались. В таблицу не
     # попадает: нужно нам, чтобы разобрать спор, а не заказчику.
     overrides: dict[str, str] = Field(default_factory=dict)
@@ -144,6 +151,19 @@ class DeliveryRow(BaseModel):
         """
         parts = ([str(self.comment)] if self.comment is not None else []) + list(self.notes)
         return "; ".join(parts) if parts else None
+
+    @property
+    def camera_cell(self) -> str:
+        """Графа P: какая камера и что на её часах.
+
+        Только часы, минуты и секунды: у К3 в именах файлов стоит август вместо
+        сентября (`clocks`), и чужой месяц в книге читался бы как ошибка книги,
+        а не как дефект камеры. На вопрос «куда перемотать» дата не отвечает —
+        запись названа в графе N.
+        """
+        if not self.camera or self.camera_ts is None:
+            return ""
+        return f"К{self.camera} {self.camera_ts:%H:%M:%S}"
 
     @property
     def number(self) -> str | None:

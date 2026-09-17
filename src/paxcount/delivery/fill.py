@@ -30,16 +30,20 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 from .model import DeliveryRow
-from .xlsx import BLANK_SHEET, NA, row_values
+from .xlsx import BLANK_SHEET, EXTRA_HEADERS, NA, row_values
 
 # Ноль отсчёта дат Excel. 1899-12-30, а не 1900-01-01: в отсчёте есть
 # несуществующее 29 февраля 1900 года, и сдвиг на два дня — часть формата.
 EXCEL_EPOCH = date(1899, 12, 30)
 
-COLUMNS = "ABCDEFGHIJKLMNO"
-# Стиль на графу — по принятому файлу заказчика.
+# Пятнадцать граф заказчика и шестнадцатая наша — часы камеры, на которой видна
+# посадка-высадка (`xlsx.EXTRA_HEADERS`).
+COLUMNS = "ABCDEFGHIJKLMNOP"
+EXTRA_COLUMN = "P"
+# Стиль на графу — по принятому файлу заказчика. Нашей графе достаётся стиль
+# соседней текстовой: она в принятом файле не описана вовсе.
 STYLES = {"A": 3, "B": 4, "C": 1, "D": 1, "E": 3, "F": 3, "G": 1, "H": 1,
-           "I": 1, "J": 1, "K": 1, "L": 1, "M": 5, "N": 3, "O": 3}
+           "I": 1, "J": 1, "K": 1, "L": 1, "M": 5, "N": 3, "O": 3, "P": 3}
 # Графы, которые заказчик держит числами. Графа M числовая, только пока в ней
 # один код: с примечанием словами она становится текстом, это решает проверка
 # ниже. Остальные — строки, даже если в них
@@ -157,11 +161,26 @@ def _filled_sheet(xml: str, rows: list[DeliveryRow],
         _row_xml(i, row_values(row), marks.get(i, {}), marked_style)
         for i, row in enumerate(rows, start=2)
     )
-    data = (header.group(0) if header else "") + body
+    data = (_titled(header.group(0)) if header else "") + body
     xml = re.sub(r"<sheetData\s*/>|<sheetData>.*?</sheetData>",
                   f"<sheetData>{data}</sheetData>", xml, count=1, flags=re.S)
     return re.sub(r'<dimension ref="A1:[A-Z]+\d+"\s*/>',
-                   f'<dimension ref="A1:O{len(rows) + 1}"/>', xml, count=1)
+                   f'<dimension ref="A1:{COLUMNS[-1]}{len(rows) + 1}"/>',
+                   xml, count=1)
+
+
+def _titled(header: str) -> str:
+    """Дописывает подпись нашей графы в шапку заказчика, не трогая его собственную.
+
+    Шапка приходит из шаблона и уходит из него же байт в байт: на той стороне
+    книгу разбирают по тексту заголовка. Но графы P в его шапке нет, а столбец
+    времён без подписи читается как мусор справа от таблицы.
+    """
+    if f'r="{EXTRA_COLUMN}1"' in header:
+        return header
+    cell = _cell(f"{EXTRA_COLUMN}1", EXTRA_COLUMN, EXTRA_HEADERS[0],
+                  STYLES[EXTRA_COLUMN])
+    return header[: header.rindex("</row>")] + cell + "</row>"
 
 
 def fill_template(

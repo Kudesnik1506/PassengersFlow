@@ -51,6 +51,16 @@ HEADERS = [
     "Фамилия, имя расшифровщика",
 ]
 
+# Наша графа, шестнадцатая. В шапке заказчика её нет и быть не может: инструкция
+# знает одно время — то, что в графах C и D. Но оно стоит на ОБЩЕЙ шкале
+# (решение 036), а перематывать запись проверяющий будет по часам конкретной
+# камеры, и они расходятся: К3 отстаёт от К2 на семь минут. Подпись нарочно не
+# похожа на подписи заказчика — графу нельзя принять за графу инструкции.
+EXTRA_HEADERS = [
+    "Камера, на которой видна посадка-высадка, и время на её часах (наше)",
+]
+SHEET_HEADERS = HEADERS + EXTRA_HEADERS
+
 # Отказ от счёта по правилу инструкции: ТС уже стояло с открытыми дверями в
 # начале или конце съёмки. Не ноль — см. `DeliveryRow.counted`.
 NA = "N/A"
@@ -111,7 +121,7 @@ def _cell(value: object) -> str:
 
 
 def row_values(row: DeliveryRow) -> list[str]:
-    """Строка модели в порядке колонок заказчика.
+    """Строка модели в порядке колонок заказчика плюс наша шестнадцатая.
 
     Бортовой номер сюда не попадает намеренно: в графе заказчика у автобуса
     стоит государственный, а бортовой остаётся у нас для перепроверки.
@@ -132,6 +142,7 @@ def row_values(row: DeliveryRow) -> list[str]:
         _cell(row.comment_cell),
         row.video,
         row.operator,
+        row.camera_cell,
     ]
 
 
@@ -150,7 +161,7 @@ def write_rows(path: Path, rows: list[DeliveryRow], blank_last: bool = False) ->
             sizes[i].value if i < len(sizes) else "", "",
             occ[i].value if i < len(occ) else "",
         ])
-    blank_rows = [HEADERS] + [row_values(r) for r in rows]
+    blank_rows = [SHEET_HEADERS] + [row_values(r) for r in rows]
     comment_rows = [list(pair) for pair in COMMENT_TABLE]
 
     sheets = [(DICT_SHEET, dict_rows), (BLANK_SHEET, blank_rows),

@@ -124,3 +124,23 @@ def test_the_comment_code_is_ours_too():
     """Код таблицы 2 выведен из нашей разметки дверей, а не взят у оператора."""
     from paxcount.delivery.marking import marks_for_our_measurement
     assert "M" in marks_for_our_measurement(row(comment=7))
+
+
+def test_the_camera_reading_is_marked_as_ours():
+    """Графы P у оператора нет вовсе — она наша целиком (принцип 9).
+
+    Помечается не потому, что мы с ним разошлись, а потому, что содержимое
+    получено нами: проверяющий обязан отличать наше от его, не сверяясь с
+    подписью столбца.
+    """
+    from datetime import datetime
+
+    from paxcount.delivery.marking import marks_for_our_measurement
+    seen = row(camera="3", camera_ts=datetime(2026, 8, 10, 6, 58, 6))
+    assert "P" in marks_for_our_measurement(seen)
+
+
+def test_an_empty_camera_reading_is_not_marked():
+    """Посадку мы не видели — графа пуста, и красить в ней нечего."""
+    from paxcount.delivery.marking import marks_for_our_measurement
+    assert "P" not in marks_for_our_measurement(row())

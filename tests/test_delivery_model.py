@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 from paxcount.delivery.model import (
     DeliveryRow,
@@ -177,3 +179,37 @@ def test_row_records_which_fields_we_overrode():
 
 def test_overrides_empty_by_default():
     assert row().overrides == {}
+
+
+# ---- Часы камеры, на которой видна посадка-высадка ---------------------------
+#
+# Время строки бланка стоит на ОБЩЕЙ шкале — иначе лента переставит машины
+# местами (решение 036). Но открывают-то запись конкретной камеры, а её часы с
+# общей шкалой не совпадают: К3 отстаёт от К2 почти на семь минут. Поэтому
+# рядом едет отдельная графа — что показывают часы той камеры, на которой
+# посадку видно, и какая это камера.
+
+
+def test_the_camera_cell_names_the_camera_and_its_own_clock():
+    r = row(camera="3", camera_ts=datetime(2026, 8, 10, 6, 58, 6))
+    assert r.camera_cell == "К3 06:58:06"
+
+
+def test_the_camera_cell_hides_the_date_the_camera_lies_about():
+    """У К3 в именах файлов стоит август вместо сентября (`clocks`).
+
+    Графа отвечает на вопрос «куда перемотать», и дата в ней не помогает, а
+    вредит: чужой месяц читается как ошибка книги, а не как дефект камеры.
+    """
+    r = row(camera="3", camera_ts=datetime(2026, 8, 10, 6, 58, 6))
+    assert "08" not in r.camera_cell and "2026" not in r.camera_cell
+
+
+def test_a_row_we_did_not_watch_leaves_the_camera_cell_empty():
+    """Строка оператора: посадку мы не видели, и показывать нечего.
+
+    Пустая графа честнее подставленной: назвав камеру там, где мы её не
+    смотрели, книга утверждает наблюдение, которого не было.
+    """
+    assert row().camera_cell == ""
+    assert row(camera="2").camera_cell == "", "без времени камера ничего не значит"

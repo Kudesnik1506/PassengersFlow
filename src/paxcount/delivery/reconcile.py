@@ -142,11 +142,16 @@ def build_row(
     operator: str,
     date: str | None = None,
     notes: tuple[str, ...] = (),
+    camera_ts: datetime | None = None,
 ) -> DeliveryRow:
     """Строка бланка по фактам визита. Незнание не заполняется догадкой.
 
     `notes` — аномалии съёмки словами (разрыв записи, край смены). Приходят
     снаружи: этот модуль знает визит, но не знает карту покрытия смены.
+
+    `camera_ts` — что показывали часы САМОЙ камеры в этот момент. Приходит
+    отдельно потому, что `facts.stop_ts` к этой минуте уже переведён на общую
+    шкалу, а перематывать запись будут по часам камеры (решение 036).
     """
     code = comment_code(facts.layout)[0] if facts.layout is not None else None
     return DeliveryRow(
@@ -166,6 +171,8 @@ def build_row(
         notes=notes,
         video=video,
         operator=operator,
+        camera=facts.camera,
+        camera_ts=camera_ts,
     )
 
 

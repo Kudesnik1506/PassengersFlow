@@ -15,7 +15,8 @@ from pathlib import Path
 
 import pytest
 from paxcount.delivery.model import DeliveryRow, Occupancy, VehicleKind, VehicleSize
-from paxcount.delivery.xlsx import BLANK_SHEET, HEADERS, read_rows, write_rows
+from paxcount.delivery.xlsx import (BLANK_SHEET, HEADERS, read_rows,
+                                     sheet_cells, write_rows)
 
 REAL_TABLE = Path("docs/документы от Заказчика/2026-05-19-1317-1715-15182.xlsx")
 
@@ -128,3 +129,28 @@ def test_reads_real_accepted_table():
     counted = [r for r in rows if r.counted]
     assert sum(r.alighted for r in counted) == 1334
     assert sum(r.boarded for r in counted) == 830
+
+
+# ---- Наша графа за шапкой заказчика ------------------------------------------
+#
+# Шапка заказчика — пятнадцать граф, и трогать её нельзя: на той стороне книгу
+# разбирают по тексту заголовка. Графа с часами камеры добавляется ШЕСТНАДЦАТОЙ
+# и подписана по-своему, чтобы её нельзя было принять за графу инструкции.
+
+
+def test_our_extra_column_stands_after_the_customer_header():
+    from paxcount.delivery.xlsx import EXTRA_HEADERS, SHEET_HEADERS
+
+    assert SHEET_HEADERS[:15] == HEADERS, "пятнадцать граф заказчика не двигаются"
+    assert len(SHEET_HEADERS) == 16
+    assert SHEET_HEADERS[15] == EXTRA_HEADERS[0]
+    assert "камер" in EXTRA_HEADERS[0].lower(), "графа обязана называть камеру"
+
+
+def test_the_camera_reading_reaches_the_sheet(tmp_path):
+    from datetime import datetime
+
+    path = tmp_path / "out.xlsx"
+    write_rows(path, [sample(camera="3", camera_ts=datetime(2026, 8, 10, 6, 58, 6))])
+    cells = sheet_cells(path, BLANK_SHEET)
+    assert cells[1]["P"] == "К3 06:58:06"

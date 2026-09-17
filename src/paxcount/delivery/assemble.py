@@ -94,7 +94,7 @@ def book(
         rows.append(build_row(
             VisitFacts(**{**facts.__dict__, "stop_ts": moment}),
             group=group, stop=stop, video=item.visit.file, operator=operator,
-            notes=notes,
+            notes=notes, camera_ts=facts.stop_ts,
         ))
     return rows
 
