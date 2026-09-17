@@ -82,6 +82,58 @@ def _cell(ref: str, column: str, value: str, style_index: int,
              f"{escape(value)}</t></is></c>")
 
 
+# Приметы строки, по которым она узнаётся в прошлой книге. Номер строки для
+# этого не годится: машина, пропущенная оператором, вписывается по времени
+# (решение 069), и после вставки тот же номер указывает на соседнюю машину.
+_ROW_KEY = ("C", "D", "G", "H")
+
+
+def _key_of_cells(cell: dict[str, str]) -> tuple[str, ...]:
+    return tuple((cell.get(c) or "").strip() for c in _ROW_KEY)
+
+
+def _key_of_row(row: DeliveryRow) -> tuple[str, ...]:
+    return (str(row.hours), str(row.minutes), row.number or "", row.route or "")
+
+
+def carried_over(previous: list[dict[str, str]],
+                  rows: list[DeliveryRow]) -> dict[int, dict[str, str]]:
+    """Клетки прошлой книги, которые наша сборка не заполняет: их не стирают.
+
+    Книга лежит у заказчика, и он в ней ПИШЕТ: наполненность по прибытию мы не
+    считаем вовсе, и графу I он заполняет руками по записи. Пересборка обязана
+    оставить эту работу на месте — чужой труд не стирается молча.
+
+    Наше значение всегда главнее: клетку, которую заполняем мы, перенос не
+    трогает, иначе исправление данных никогда не доехало бы до книги.
+
+    Строка ищется по приметам (`_ROW_KEY`), а не по номеру. Одинаковые приметы
+    бывают — повторное нажатие оператора даёт две строки в ту же минуту
+    (решение 075), — и разбираются по порядку следования.
+    """
+    wanted: dict[tuple, list[int]] = {}
+    produced: dict[int, list[str]] = {}
+    for index, row in enumerate(rows, start=2):
+        values = row_values(row)
+        produced[index] = values
+        wanted.setdefault(_key_of_row(row), []).append(index)
+
+    kept: dict[int, dict[str, str]] = {}
+    for cell in previous:
+        places = wanted.get(_key_of_cells(cell))
+        if not places:
+            continue
+        index = places.pop(0)
+        ours = dict(zip(COLUMNS, produced[index]))
+        keep = {column: (value or "").strip()
+                for column, value in cell.items()
+                if column in COLUMNS and (value or "").strip()
+                and not (ours.get(column) or "").strip()}
+        if keep:
+            kept[index] = keep
+    return kept
+
+
 def _row_xml(index: int, values: list[str], marks: dict[str, str],
               marked_style: dict[str, dict[int, int]]) -> str:
     cells = []
@@ -154,11 +206,14 @@ def _with_fills(styles: str,
 
 def _filled_sheet(xml: str, rows: list[DeliveryRow],
                    marks: dict[int, dict[str, str]],
-                   marked_style: dict[str, dict[int, int]]) -> str:
+                   marked_style: dict[str, dict[int, int]],
+                   keep: dict[int, dict[str, str]] | None = None) -> str:
     """Шапка шаблона остаётся своя, ниже ложатся наши строки."""
+    keep = keep or {}
     header = re.search(r'<row r="1".*?</row>', xml, re.S)
     body = "".join(
-        _row_xml(i, row_values(row), marks.get(i, {}), marked_style)
+        _row_xml(i, _with_kept(row_values(row), keep.get(i, {})),
+                  marks.get(i, {}), marked_style)
         for i, row in enumerate(rows, start=2)
     )
     data = (_titled(header.group(0)) if header else "") + body
@@ -183,6 +238,18 @@ def _titled(header: str) -> str:
     return header[: header.rindex("</row>")] + cell + "</row>"
 
 
+def _with_kept(values: list[str], kept: dict[str, str]) -> list[str]:
+    """Наши значения плюс перенесённые: своё не уступаем, чужое не затираем."""
+    if not kept:
+        return values
+    out = list(values)
+    for column, value in kept.items():
+        position = COLUMNS.index(column)
+        if not (out[position] or "").strip():
+            out[position] = value
+    return out
+
+
 def fill_template(
     template: Path,
     rows: list[DeliveryRow],
@@ -190,6 +257,7 @@ def fill_template(
     sheet: str = BLANK_SHEET,
     highlight: dict[int, set[str]] | None = None,
     duplicates: dict[int, set[str]] | None = None,
+    keep: dict[int, dict[str, str]] | None = None,
 ) -> Path:
     """Пишет книгу по шаблону заказчика. Шаблон не меняется.
 
@@ -223,7 +291,7 @@ def fill_template(
         )
         payload["xl/styles.xml"] = styles.encode("utf-8")
     payload[part] = _filled_sheet(
-        payload[part].decode("utf-8"), rows, marks, marked_style,
+        payload[part].decode("utf-8"), rows, marks, marked_style, keep,
     ).encode("utf-8")
     tmp = out.with_suffix(out.suffix + ".tmp")
     with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as dst:

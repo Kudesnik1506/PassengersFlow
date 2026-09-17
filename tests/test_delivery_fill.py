@@ -271,3 +271,80 @@ def test_the_sheet_size_counts_our_column_too(tmp_path):
     with zipfile.ZipFile(book) as z:
         xml = z.read("xl/worksheets/sheet2.xml").decode("utf-8")
     assert 'ref="A1:P2"' in xml
+
+
+# ---- Ручной ввод заказчика переживает пересборку -------------------------------
+#
+# Книга лежит у заказчика и он в ней ПИШЕТ: наполненность по прибытию мы не
+# считаем вовсе, и графу I он заполнял руками, глядя запись. Пересборка книги
+# затирала эти клетки молча — потеря чужой работы без следа.
+#
+# Правило: чего наша сборка не пишет, того она и не стирает. Строки при этом
+# сдвигаются (машина, пропущенная оператором, вписывается по времени), поэтому
+# перенос идёт по ПРИМЕТАМ строки, а не по её номеру: номер после вставки
+# указывает на соседнюю машину, и перенос молча положил бы данные не туда.
+
+
+def test_a_cell_we_leave_empty_is_carried_over(tmp_path):
+    from paxcount.delivery.fill import carried_over
+
+    previous = [{"C": "6", "D": "56", "G": "А000АА00", "H": "26", "I": "Б"}]
+    kept = carried_over(previous, [row(hours=6, minutes=56, route="26",
+                                        state_number="А000АА00")])
+    assert kept == {2: {"I": "Б"}}
+
+
+def test_a_cell_we_fill_ourselves_is_not_carried_over(tmp_path):
+    """Наше значение главнее: иначе правка данных никогда не доедет до книги."""
+    from paxcount.delivery.fill import carried_over
+
+    previous = [{"C": "6", "D": "56", "G": "А000АА00", "H": "64", "I": "Б"}]
+    kept = carried_over(previous, [row(hours=6, minutes=56, route="26",
+                                        state_number="А000АА00")])
+    assert "H" not in kept.get(2, {}), "маршрут пишем мы"
+
+
+def test_carrying_follows_the_row_that_moved(tmp_path):
+    """Перед строкой вписали машину — ручная клетка едет за СВОЕЙ строкой."""
+    from paxcount.delivery.fill import carried_over
+
+    previous = [{"C": "6", "D": "56", "G": "А000АА00", "H": "26", "I": "Б"}]
+    rows = [row(hours=6, minutes=50, route="50", state_number="А001АА00"),
+             row(hours=6, minutes=56, route="26", state_number="А000АА00")]
+    assert carried_over(previous, rows) == {3: {"I": "Б"}}
+
+
+def test_a_row_that_vanished_carries_nothing(tmp_path):
+    """Строки с такими приметами в новой книге нет — переносить некуда."""
+    from paxcount.delivery.fill import carried_over
+
+    previous = [{"C": "7", "D": "30", "G": "А777АА00", "H": "99", "I": "Б"}]
+    assert carried_over(previous, [row(hours=6, minutes=56, route="26",
+                                        state_number="А000АА00")]) == {}
+
+
+def test_the_carried_value_reaches_the_sheet(tmp_path):
+    book = fill_template(template(tmp_path / "шаблон.xlsx"), [row()],
+                          tmp_path / "книга.xlsx", keep={2: {"I": "Б"}})
+    assert cells(book)["I"] == ("inlineStr", "Б")
+
+
+def test_the_carry_covers_every_column_not_just_occupancy():
+    """Правило общее: пустая у нас графа не стирается, какой бы она ни была.
+
+    Заказчик пишет в книге не только наполненность — и знать заранее, какие
+    графы он тронет, мы не можем. Поэтому перенос не перечисляет графы, а
+    смотрит, пусто ли у нас.
+    """
+    from paxcount.delivery.fill import COLUMNS, carried_over
+
+    ours = row(hours=6, minutes=56, route="26", state_number="А000АА00",
+                alighted=None, boarded=None, video="", operator="")
+    empty = {c for c, v in zip(COLUMNS, __import__(
+        "paxcount.delivery.xlsx", fromlist=["row_values"]).row_values(ours))
+              if not (v or "").strip()}
+    previous = [{"C": "6", "D": "56", "G": "А000АА00", "H": "26",
+                  **{c: "чужое" for c in empty}}]
+    kept = carried_over(previous, [ours])
+    assert set(kept[2]) == empty, "перенесено всё, что у нас пусто"
+    assert len(empty) >= 5, f"граф, которые мы не заполняем, должно быть много: {empty}"

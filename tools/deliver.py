@@ -45,7 +45,7 @@ from paxcount.delivery.assemble import (  # noqa: E402
 from paxcount.delivery.model import VehicleKind  # noqa: E402
 from paxcount.delivery.reconcile import VisitFacts  # noqa: E402
 from paxcount.delivery.agreement import Agreement, agree  # noqa: E402
-from paxcount.delivery.fill import fill_template  # noqa: E402
+from paxcount.delivery.fill import carried_over, fill_template  # noqa: E402
 from paxcount.delivery.marking import (  # noqa: E402
     marks_for, marks_for_duplicate, marks_for_our_measurement, marks_for_repair,
 )
@@ -60,7 +60,7 @@ from paxcount.delivery.sequence import (  # noqa: E402
 from paxcount.delivery.coverage import gaps_of_cameras, with_footage  # noqa: E402
 from paxcount.delivery.timeline import CameraTrack, parse_slot  # noqa: E402
 from paxcount.delivery.validate import validate  # noqa: E402
-from paxcount.delivery.xlsx import write_rows  # noqa: E402
+from paxcount.delivery.xlsx import BLANK_SHEET, sheet_cells, write_rows  # noqa: E402
 from paxcount import portal  # noqa: E402
 from paxcount.settings import DATA_DIR, OUT_DIR  # noqa: E402
 from paxcount.truth import load_door_layout, visit_moment  # noqa: E402
@@ -235,6 +235,9 @@ def main() -> int:
                         help="спросить госномера у портала по бортовым (сеть, учётка из .env)")
     parser.add_argument("--only-decoded", action="store_true",
                         help="только расшифрованные машины, без ленты всей смены")
+    parser.add_argument("--keep-from", type=Path, default=None,
+                         help="книга, в которой заказчик писал руками: её клетки "
+                               "не затираются пересборкой")
     parser.add_argument("--out", type=Path, default=OUT_DIR)
     args = parser.parse_args()
 
@@ -382,9 +385,20 @@ def main() -> int:
 
     args.out.mkdir(parents=True, exist_ok=True)
     name = book_filename(rows, group=args.group, stop=args.stop)
+    # Клетки, которые заказчик заполнял руками. Наша сборка их не пишет —
+    # значит и стереть не вправе: наполненность по прибытию мы не считаем
+    # вовсе, а в книге она стоит.
+    keep: dict = {}
+    previous = args.keep_from if args.keep_from is not None else args.out / name
+    if previous.exists():
+        keep = carried_over(sheet_cells(previous, BLANK_SHEET)[1:], rows)
+        cells = sum(len(v) for v in keep.values())
+        console.print(f"перенесено из {previous.name}: {cells} клеток ручного "
+                       f"ввода в {len(keep)} строках")
     if args.template is not None:
         written = fill_template(args.template, rows, args.out / name,
-                                 highlight=highlight, duplicates=duplicates)
+                                 highlight=highlight, duplicates=duplicates,
+                                 keep=keep)
     else:
         written = write_rows(args.out / name, rows)
     console.print(f"книга: {written}")
