@@ -77,9 +77,9 @@ def test_a_vehicle_absent_from_the_portal_keeps_its_board_number():
 
 def test_a_known_state_number_is_not_overwritten():
     """Прочитанный с кадра номер не подменяется: портал тут второе мнение."""
-    ours = row(state_number="Т215АВ198")
+    ours = row(state_number="А001АА00")
     out, changed = with_plate(ours, MOMENT, answers(found()))
-    assert out.state_number == "Т215АВ198"
+    assert out.state_number == "А001АА00"
     assert changed == frozenset(), "ничего не меняли — помечать нечего"
 
 
