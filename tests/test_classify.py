@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 from conftest import make_life, make_visit, walk
 from paxcount.core.types import Direction
 from paxcount.zonecount import MIN_TRACK_SECONDS, classify
@@ -106,3 +107,51 @@ def test_passer_by_moving_along_the_body_is_not_an_event():
     direction, reason = judge(life)
     assert direction is None
     assert "выход отклонён" in reason
+
+
+# ---- Порог «стоял на месте» — в долях роста, а не в пикселях -----------------
+#
+# `_by_displacement` — запасной критерий: он решает, куда шёл человек, когда
+# прямые признаки направления не сработали. Порог там был задан абсолютом: 20
+# пикселей. Ровно от этого бережёт соседний `MIN_SHIFT_RATIO`, у которого в
+# комментарии написано «в долях высоты bbox человека — так порог не зависит от
+# масштаба сцены».
+#
+# Цена абсолюта измерена: на визите 3 автобус снят с торца, человек в кадре
+# ростом под сотню пикселей, и 20 px — пятая часть его роста. На визите 1
+# человек 370 px, и те же 20 px — одна двадцатая. Один порог означает на двух
+# записях разное, и визит 3 отдаёт «стоял на месте» там, где человек прошёл
+# половину собственного роста.
+
+def scaled_walk(height: float, steps: int, dx: float, dy: float) -> list[np.ndarray]:
+    """Человек заданного роста, шагающий на dx/dy ДОЛЕЙ роста за весь путь."""
+    return [
+        np.array([
+            500.0 + dx * height * i / (steps - 1) - height / 6,
+            600.0 + dy * height * i / (steps - 1) - height,
+            500.0 + dx * height * i / (steps - 1) + height / 6,
+            600.0 + dy * height * i / (steps - 1),
+        ])
+        for i in range(steps)
+    ]
+
+
+def test_standing_still_is_judged_by_person_height_not_pixels():
+    """Одно и то же движение у крупного и мелкого человека — один вердикт.
+
+    Движение задано вдоль борта: прямые признаки направления его отклоняют
+    («движется вдоль корпуса»), и решение принимает запасной `_by_displacement`
+    — тот самый, где стоял абсолютный порог. Человек проходит 0.22 своего
+    роста; у крупного это 68 пикселей, у мелкого 17. Абсолютные 20 пикселей
+    режут ровно по масштабу сцены, а не по поведению человека.
+    """
+    visit = make_visit(4.0, 9.0)
+    big = make_life(scaled_walk(370.0, 20, 0.22, -0.05), True, True)
+    small = make_life(scaled_walk(90.0, 20, 0.22, -0.05), True, True)
+    verdicts = [
+        classify(life, visit, 1920, 1080, MIN_TRACK_SECONDS)
+        for life in (big, small)
+    ]
+    assert verdicts[0][0] == verdicts[1][0], (
+        f"масштаб сцены не смеет менять вердикт: {verdicts}")
+    assert verdicts[0][0] is not None, "проход в пятую часть роста — не стояние"
