@@ -17,6 +17,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 from paxcount.delivery.model import VehicleKind
 from paxcount.portal import NotFound, PortalClient, VehicleInfo
@@ -190,3 +192,82 @@ def test_http_headers_are_latin1_encodable():
     for name, value in HTTP_HEADERS:
         name.encode("latin-1")
         value.encode("latin-1")
+
+
+# ---- Две смены за день -------------------------------------------------------
+#
+# У 12 % машин парка за день две смены на разных маршрутах: борт 38182 ходил по
+# 64-му с 09:33 до 12:29 и по 481-му с 14:53 до 00:31. Клиент брал первую строку
+# ответа, то есть для вечернего прибытия писал утренний маршрут. Колонка «Номер
+# маршрута» обязательная, а «не более 5 % транспорта с неопознанным маршрутом» —
+# правило инструкции, так что цена ошибки — брак файла, а не неточность.
+
+TWO_SHIFTS = {
+    "aaData": [
+        ["38182", "Х123ХХ178", {"name": "ООО"}, {"name": "Автобус"},
+         {"routeNumber": "64"}, "2026-09-10 09:33", "2026-09-10 12:29"],
+        ["38182", "Х123ХХ178", {"name": "ООО"}, {"name": "Автобус"},
+         {"routeNumber": "481"}, "2026-09-10 14:53", "2026-09-11 00:31"],
+    ]
+}
+
+
+def client_with(answers):
+    transport = FakeTransport(answers)
+    return PortalClient(transport, "u", "p", sleep=transport.sleep), transport
+
+
+def test_morning_arrival_gets_the_morning_route():
+    client, _ = client_with({"38182": TWO_SHIFTS})
+    info = client.lookup("38182", "2026-09-10", VehicleKind.BUS,
+                         at=datetime(2026, 9, 10, 10, 0))
+    assert info.route == "64"
+
+
+def test_evening_arrival_gets_the_evening_route():
+    client, _ = client_with({"38182": TWO_SHIFTS})
+    info = client.lookup("38182", "2026-09-10", VehicleKind.BUS,
+                         at=datetime(2026, 9, 10, 15, 0))
+    assert info.route == "481"
+
+
+def test_shift_crossing_midnight_still_contains_late_evening():
+    """Смена 14:53 → 00:31 кончается назавтра: 23:00 внутри неё."""
+    client, _ = client_with({"38182": TWO_SHIFTS})
+    info = client.lookup("38182", "2026-09-10", VehicleKind.BUS,
+                         at=datetime(2026, 9, 10, 23, 0))
+    assert info.route == "481"
+
+
+def test_choice_between_shifts_is_reported():
+    """Вызывающий должен знать, что выбор был, — иначе он не проверяем."""
+    client, _ = client_with({"38182": TWO_SHIFTS})
+    info = client.lookup("38182", "2026-09-10", VehicleKind.BUS,
+                         at=datetime(2026, 9, 10, 10, 0))
+    assert info.shifts_total == 2
+    assert info.selected_by == "время"
+
+
+def test_time_outside_every_shift_is_flagged_not_guessed():
+    """13:00 не попадает ни в одну смену: ближайшая берётся, но с пометкой."""
+    client, _ = client_with({"38182": TWO_SHIFTS})
+    info = client.lookup("38182", "2026-09-10", VehicleKind.BUS,
+                         at=datetime(2026, 9, 10, 13, 0))
+    assert info.selected_by == "ближайшая", "выбор вне смен обязан быть виден"
+    assert info.route in {"64", "481"}
+
+
+def test_lookup_without_time_keeps_the_first_row():
+    """Без времени прибытия поведение прежнее — и честно помечено."""
+    client, _ = client_with({"38182": TWO_SHIFTS})
+    info = client.lookup("38182", "2026-09-10", VehicleKind.BUS)
+    assert info.route == "64" and info.selected_by == "первая строка"
+
+
+def test_raw_rows_are_cached_across_different_times():
+    """Два прибытия одной машины — один запрос к государственному порталу."""
+    client, transport = client_with({"38182": TWO_SHIFTS})
+    client.lookup("38182", "2026-09-10", VehicleKind.BUS, at=datetime(2026, 9, 10, 10, 0))
+    client.lookup("38182", "2026-09-10", VehicleKind.BUS, at=datetime(2026, 9, 10, 15, 0))
+    searches = [c for c in transport.calls if c[0].endswith("list")]
+    assert len(searches) == 1

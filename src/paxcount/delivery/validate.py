@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 
-from .model import COMMENT_CODES_UNCOUNTABLE, KINDS_NEEDING_STATE_NUMBER, DeliveryRow
+from .model import KINDS_NEEDING_STATE_NUMBER, DeliveryRow
 
 # «Но количество транспорта с неопознанным номером маршрута не должно превышать
 # 5% от всего транспорта на остановке» — инструкция расшифровщика.
@@ -63,12 +63,6 @@ def validate(rows: list[DeliveryRow]) -> list[Problem]:
             problems.append(Problem(i, "video", "не указано название видеофайла"))
         if not row.operator:
             problems.append(Problem(i, "operator", "не указана фамилия расшифровщика"))
-        if row.comment in COMMENT_CODES_UNCOUNTABLE and row.counted:
-            problems.append(Problem(
-                i, "comment",
-                f"комментарий {row.comment} означает «посчитать нельзя», "
-                "но в графах стоят числа — расхождение надо объяснить",
-            ))
 
     if rows:
         unknown = sum(1 for r in rows if not r.route)

@@ -187,3 +187,48 @@ def test_doors_jitter_skips_uncached_prod_video(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_mod, "get_tracks", _boom)
 
     cli_mod.doors_jitter(prod_dir)  # не должно поднять AssertionError выше
+
+
+# ---- Боевой stride доходит до самой детекции ---------------------------------
+
+
+def test_cli_settings_take_stride_from_the_video_set(tmp_path, monkeypatch):
+    """Без явной опции stride берётся по набору, а не из умолчания команды.
+
+    Дефект был не теоретический: первый прогон на боевой записи прошёл со
+    stride 1, потому что опция `--stride` имеет умолчание и молча перебивала
+    `detector_for`. Детекция заняла втрое больше нужного, а кэш лёг с ключом
+    `s1` — то есть `prod_cache_missing`, которая спрашивает про `s3`, сочла бы
+    его отсутствующим и запустила бы всё заново. Ровно от этого расхождения
+    предостерегает докстринг `detector_for` и ради него написано решение 022.
+    """
+    from paxcount import cli, settings
+
+    prod = tmp_path / "prod"
+    prod.mkdir()
+    monkeypatch.setattr(settings, "PROD_VIDEO_DIR", prod)
+    video = prod / "смена.mp4"
+    video.touch()
+
+    chosen = cli._settings(
+        settings.DETECTOR.weights, settings.DETECTOR.imgsz,
+        settings.DETECTOR.tracker, None, video,
+    )
+    assert chosen.stride == settings.PROD_STRIDE
+
+
+def test_cli_settings_still_honour_an_explicit_stride(tmp_path, monkeypatch):
+    """Явное `--stride 1` на боевом видео остаётся правом человека."""
+    from paxcount import cli, settings
+
+    prod = tmp_path / "prod"
+    prod.mkdir()
+    monkeypatch.setattr(settings, "PROD_VIDEO_DIR", prod)
+    video = prod / "смена.mp4"
+    video.touch()
+
+    chosen = cli._settings(
+        settings.DETECTOR.weights, settings.DETECTOR.imgsz,
+        settings.DETECTOR.tracker, 1, video,
+    )
+    assert chosen.stride == 1

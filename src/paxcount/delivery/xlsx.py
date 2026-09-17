@@ -129,7 +129,7 @@ def row_values(row: DeliveryRow) -> list[str]:
         row.size.value if row.size else "",
         _cell(row.alighted) if row.alighted is not None else NA,
         _cell(row.boarded) if row.boarded is not None else NA,
-        _cell(row.comment),
+        _cell(row.comment_cell),
         row.video,
         row.operator,
     ]
@@ -229,8 +229,14 @@ def _sheet_cells(z: zipfile.ZipFile, part: str, shared: list[str]) -> list[dict[
     return rows
 
 
-def _find_blank(z: zipfile.ZipFile) -> str:
-    """Путь к листу «Бланк» — по имени через связи книги, не по порядку."""
+def _sheet_part(z: zipfile.ZipFile, name: str | None) -> str:
+    """Путь к листу книги по имени — через связи, а не по порядку.
+
+    Порядок листов у заказчика плавает: «Бланк» второй в шаблоне и третий в
+    принятой таблице, а выгрузка оператора вообще одностраничная и лист в ней
+    зовётся `Sheet`. Опора на номер однажды прочитала бы словарь вместо данных.
+    ``None`` означает «единственный лист» и допустим только когда он один.
+    """
     wb = ET.fromstring(z.read("xl/workbook.xml"))
     rels = ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))
     targets = {
@@ -238,11 +244,34 @@ def _find_blank(z: zipfile.ZipFile) -> str:
         for r in rels.iter("{http://schemas.openxmlformats.org/package/2006/relationships}"
                            "Relationship")
     }
-    for sheet in wb.iter(NS + "sheet"):
-        if (sheet.get("name") or "").strip() == BLANK_SHEET:
-            target = targets[sheet.get(RNS + "id")]
-            return "xl/" + target.lstrip("/")
-    raise ValueError(f"в книге нет листа «{BLANK_SHEET}»")
+    sheets = list(wb.iter(NS + "sheet"))
+    if name is None:
+        if len(sheets) != 1:
+            raise ValueError(
+                f"в книге {len(sheets)} листов — какой из них читать, надо назвать"
+            )
+        return "xl/" + targets[sheets[0].get(RNS + "id")].lstrip("/")
+    for sheet in sheets:
+        if (sheet.get("name") or "").strip() == name:
+            return "xl/" + targets[sheet.get(RNS + "id")].lstrip("/")
+    raise ValueError(f"в книге нет листа «{name}»")
+
+
+def sheet_cells(path: Path, sheet: str | None = None) -> list[dict[str, str]]:
+    """Строки листа как словари «буква колонки → значение».
+
+    Единственный разбор xlsx в проекте: и книга заказчика, и выгрузка
+    оператора читаются им же. Второй разбор того же формата разошёлся бы с
+    первым на первой же особенности вроде общих строк или пустых ячеек.
+    """
+    with zipfile.ZipFile(path) as z:
+        shared: list[str] = []
+        if "xl/sharedStrings.xml" in z.namelist():
+            shared = [
+                "".join(t.text or "" for t in si.iter(NS + "t"))
+                for si in ET.fromstring(z.read("xl/sharedStrings.xml")).iter(NS + "si")
+            ]
+        return _sheet_cells(z, _sheet_part(z, sheet), shared)
 
 
 def _int_or_none(value: str) -> int | None:
@@ -251,6 +280,24 @@ def _int_or_none(value: str) -> int | None:
     if not text or text.upper() in {NA, "NA", "Н/Д"}:
         return None
     return int(float(text.replace(",", ".")))
+
+
+def _split_comment(value: str) -> dict:
+    """Разбирает графу M на код таблицы 2 и аномалии словами.
+
+    Разделять обязательно: без этого следующая выгрузка получила бы в графу
+    кода строку «7; разрыв записи...», и проверка по таблице 2 отвергла бы
+    собственный файл проекта. Код — только если он идёт первым и является
+    числом целиком: «7 машин» кодом не становится.
+    """
+    parts = [p.strip() for p in (value or "").split(";") if p.strip()]
+    if not parts:
+        return {"comment": None, "notes": ()}
+    head, *rest = parts
+    try:
+        return {"comment": int(float(head.replace(",", "."))), "notes": tuple(rest)}
+    except ValueError:
+        return {"comment": None, "notes": tuple(parts)}
 
 
 def _enum_or_none(enum_cls, value: str):
@@ -272,14 +319,7 @@ def read_rows(path: Path) -> list[DeliveryRow]:
     виду ТС. Для автобуса исходный бортовой при этом уже утрачен — заменa у
     заказчика необратима (решение 026), и восстановить его из файла нечем.
     """
-    with zipfile.ZipFile(path) as z:
-        shared: list[str] = []
-        if "xl/sharedStrings.xml" in z.namelist():
-            shared = [
-                "".join(t.text or "" for t in si.iter(NS + "t"))
-                for si in ET.fromstring(z.read("xl/sharedStrings.xml")).iter(NS + "si")
-            ]
-        cells = _sheet_cells(z, _find_blank(z), shared)
+    cells = sheet_cells(path, BLANK_SHEET)
 
     rows: list[DeliveryRow] = []
     for cell in cells[1:]:  # первая строка — шапка
@@ -306,7 +346,7 @@ def read_rows(path: Path) -> list[DeliveryRow]:
                 size=_enum_or_none(VehicleSize, cell.get("J", "")),
                 alighted=_int_or_none(cell.get("K", "")),
                 boarded=_int_or_none(cell.get("L", "")),
-                comment=_int_or_none(cell.get("M", "")),
+                **_split_comment(cell.get("M", "")),
                 video=(cell.get("N") or "").strip(),
                 operator=(cell.get("O") or "").strip(),
             )

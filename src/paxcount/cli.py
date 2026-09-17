@@ -17,6 +17,7 @@ from .core.writer import write_run
 from .doors import is_manual, load_config, markup_state, save_config
 from .runlog import setup_logger
 from .settings import (
+    detector_for,
     DETECTOR, OUT_DIR, TRUTH_PATH, ZONE_FRACTION_MAX, ZONE_FRACTION_MIN,
     ZONE_MIN_BOTTOM, ZONE_MIN_TOP, DetectorSettings, videos_in,
 )
@@ -41,9 +42,21 @@ def _make_backend(name: str):
     raise typer.BadParameter(f"неизвестный бэкенд: {name}. Доступны: {', '.join(BACKENDS)}")
 
 
-def _settings(weights: str, imgsz: int, tracker: str, stride: int) -> DetectorSettings:
+def _settings(weights: str, imgsz: int, tracker: str, stride: int | None,
+              video: Path | None = None) -> DetectorSettings:
+    """Настройки детектора для команды: набор решает, опция может переспорить.
+
+    `stride=None` значит «не задано человеком» — тогда его выбирает
+    `detector_for` по набору, боевому или отладочному. Умолчание прямо в
+    опции команды когда-то перебивало этот выбор молча: боевая запись
+    детектировалась с шагом 1 вместо 3, втрое дольше, и кэш ложился с чужим
+    ключом — тем самым для гейтов его как бы не существовало.
+    """
+    base = detector_for(video) if video is not None else DETECTOR
     return DetectorSettings(
-        weights=weights, imgsz=imgsz, tracker=tracker, stride=stride, conf=DETECTOR.conf
+        weights=weights, imgsz=imgsz, tracker=tracker,
+        stride=base.stride if stride is None else stride,
+        conf=DETECTOR.conf,
     )
 
 
@@ -191,7 +204,7 @@ def run(
     backend: str = typer.Option("custom", help=f"Один из: {', '.join(BACKENDS)}."),
     out: Path = typer.Option(OUT_DIR, help="Куда складывать результаты."),
     debug: bool = typer.Option(False, help="Писать отладочное видео с боксами."),
-    stride: int = typer.Option(DETECTOR.stride, help="Брать каждый N-й кадр."),
+    stride: int = typer.Option(None, help="Брать каждый N-й кадр. По умолчанию — по набору: боевой 3, отладочный 1."),
     tracker: str = typer.Option(DETECTOR.tracker, help="Трекер ultralytics."),
     weights: str = typer.Option(DETECTOR.weights),
     imgsz: int = typer.Option(DETECTOR.imgsz),
@@ -200,11 +213,13 @@ def run(
 ) -> None:
     """Считает пассажиров и пишет visits.csv, events.csv, run.json."""
     engine = _make_backend(backend)
-    settings = _settings(weights, imgsz, tracker, stride)
     run_id = time.strftime("%Y%m%d-%H%M%S")
     results: list[RunResult] = []
 
     for video in videos_in(target):
+        # Настройки считаются на каждое видео: в одном прогоне могут идти и
+        # боевые записи, и отладочные, а шаг у них разный.
+        settings = _settings(weights, imgsz, tracker, stride, video)
         config = load_config(video)
         data, cached, elapsed = get_tracks(
             video, settings=settings, device=device, refresh=refresh
@@ -252,7 +267,7 @@ def bench(
     target: Path | None = typer.Argument(None),
     out: Path = typer.Option(OUT_DIR),
     truth: Path = typer.Option(TRUTH_PATH),
-    stride: int = typer.Option(DETECTOR.stride),
+    stride: int = typer.Option(None),
     tracker: str = typer.Option(DETECTOR.tracker),
     weights: str = typer.Option(DETECTOR.weights),
     imgsz: int = typer.Option(DETECTOR.imgsz),
@@ -261,10 +276,11 @@ def bench(
     from .evaluate import compare_events, compare_runs
     from .settings import DATA_DIR
 
-    settings = _settings(weights, imgsz, tracker, stride)
     run_id = time.strftime("%Y%m%d-%H%M%S") + "-bench"
     for video in videos_in(target):
-        data, _, _ = get_tracks(video, settings=settings)
+        data, _, _ = get_tracks(
+            video, settings=_settings(weights, imgsz, tracker, stride, video)
+        )
         config = load_config(video)
         for name in BACKENDS:
             result = _make_backend(name).run(data, config)
@@ -341,7 +357,7 @@ def compare_events_cmd(
 @app.command()
 def diagnose(
     video: Path = typer.Argument(...),
-    stride: int = typer.Option(DETECTOR.stride),
+    stride: int = typer.Option(None),
     tracker: str = typer.Option(DETECTOR.tracker),
     weights: str = typer.Option(DETECTOR.weights),
     imgsz: int = typer.Option(DETECTOR.imgsz),
@@ -352,7 +368,9 @@ def diagnose(
     """Показывает, почему получилось именно столько: треки, скорости, визиты."""
     from .diagnose import diagnose as run_diagnose
 
-    data, cached, _ = get_tracks(video, settings=_settings(weights, imgsz, tracker, stride))
+    data, cached, _ = get_tracks(
+        video, settings=_settings(weights, imgsz, tracker, stride, video)
+    )
     console.print(
         f"{video.name} · {'кэш' if cached else 'детекция'} · {len(data.frames)} кадров"
     )

@@ -81,14 +81,23 @@ def test_missing_operator_is_an_error():
     assert validate([sample(operator="")]) != []
 
 
-def test_uncountable_comment_with_counts_is_flagged():
-    """Коды 5-8 говорят «посчитать нельзя», а в графах при этом числа.
+def test_uncountable_comment_with_counts_is_not_flagged():
+    """Коды 5-8 значат «не все двери видно», а не «нельзя посчитать вовсе».
 
-    Это не обязательно ошибка: часть дверей видна, часть нет. Но расхождение
-    между пометкой и содержимым должно быть названо, а не замечено заказчиком.
+    Принятый заказчиком файл (2026-05-19-1317-1715-15182.xlsx) это подтверждает
+    напрямую: строки 36, 250, 258, 260 несут код 5, и во всех число по видимым
+    дверям стоит в К и Л (5/1, 4/4, 4/2, 2/3); строки 85 и 95 с кодом 1 —
+    аналогично (7/2, 17/2). Прежняя проверка отвергала ровно то, что заказчик
+    сам сдаёт и принимает — код и число по видимым дверям это норма, а не
+    расхождение, которое надо объяснять.
     """
-    problems = validate([sample(comment=5, alighted=4, boarded=1)])
-    assert problems and "5" in texts(problems)
+    assert validate([sample(comment=5, alighted=4, boarded=1)]) == []
+    assert validate([sample(comment=7, alighted=17, boarded=2)]) == []
+
+
+def test_uncountable_comment_without_any_count_is_also_fine():
+    """Код 5-8 плюс N/A (нет счёта вовсе) — тоже законный исход, не только число."""
+    assert validate([sample(comment=6, alighted=None, boarded=None)]) == []
 
 
 def test_duplicate_vehicle_in_same_minute_is_flagged():
