@@ -173,12 +173,14 @@ def ask_the_portal(entries: list, stop: str) -> list:
     out = []
     for n, entry in enumerate(entries, start=1):
         try:
-            row = with_plate(entry.row, entry.moment, client.lookup)
+            row, changed = with_plate(entry.row, entry.moment, client.lookup)
         except Exception as exc:               # сеть, учётка, форма ответа
             console.print(f"[red]портал замолчал на {entry.row.board_number}: {exc}[/red]")
             out.extend(entries[n - 1:])
             break
-        out.append(replace(entry, row=row))
+        # Подстановка госномера — наша правка чужой графы, и метится она так же,
+        # как починка перепутанных полей (решения 073 и 076).
+        out.append(replace(entry, row=row, repaired=entry.repaired | changed))
         if n % 25 == 0:
             console.print(f"  строка {n} из {len(entries)}")
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -283,15 +285,12 @@ def main() -> int:
     for i, entry in enumerate(entries, start=2):
         if entry.record is not None and id(entry.record) in duplicate_ids:
             duplicates[i] = marks_for_duplicate()
-        if not entry.decoded:
-            # Его строка, но графа, которую мы за него починили, уже наша.
-            marks = marks_for_repair(entry.repaired)
-        elif args.operator_export is None:
-            continue
-        else:
+        # Графы, которые мы изменили за оператором, — в любой строке.
+        marks = marks_for_repair(entry.repaired)
+        if entry.decoded and args.operator_export is not None:
             # Наш счёт в чужой строке — тоже наше утверждение, и без пометки
             # его в ленте из трёхсот строк не найти.
-            marks = marks_for(entry.agreement) | marks_for_our_measurement(entry.row)
+            marks |= marks_for(entry.agreement) | marks_for_our_measurement(entry.row)
         if marks:
             highlight[i] = marks
 

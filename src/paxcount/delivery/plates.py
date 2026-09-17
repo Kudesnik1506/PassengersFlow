@@ -30,28 +30,36 @@ from .model import KINDS_NEEDING_STATE_NUMBER, DeliveryRow
 Ask = Callable[[str, str, object, datetime], Answer]
 
 
-def with_plate(row: DeliveryRow, moment: datetime, ask: Ask) -> DeliveryRow:
-    """Строка с государственным номером из портала, если его удалось узнать.
+def with_plate(row: DeliveryRow, moment: datetime,
+                ask: Ask) -> tuple[DeliveryRow, frozenset[str]]:
+    """Строка с государственным номером из портала и то, что мы в ней изменили.
+
+    Вторым значением — поля, которые книга обязана пометить: подстановка
+    госномера это правка чужой графы, а всё наше в книге видно цветом
+    (решение 070). Не нашли номера — не меняли и графу: в ней остался
+    бортовой, записанный оператором, и красить нечего.
 
     `moment` выбирает смену: одна машина за день ходит по разным маршрутам, и
     без времени ответ верен наполовину (`portal.PortalClient.lookup`).
     """
     if row.kind not in KINDS_NEEDING_STATE_NUMBER:
-        return row          # у рельсового госномера нет, спрашивать нечего
+        return row, frozenset()   # у рельсового госномера нет, спрашивать нечего
     if row.state_number or not row.board_number:
-        return row          # знаем сами или спрашивать не о чем
+        return row, frozenset()   # знаем сами или спрашивать не о чем
 
     answer = ask(row.board_number, moment.strftime("%Y-%m-%d"), row.kind, moment)
     overrides = dict(row.overrides)
 
     if isinstance(answer, NotFound):
         overrides["госномер"] = f"портал: {answer.reason}"
-        return row.model_copy(update={"overrides": overrides})
+        return row.model_copy(update={"overrides": overrides}), frozenset()
 
     assert isinstance(answer, VehicleInfo)
     update: dict = {}
+    changed: set[str] = set()
     if answer.state_number:
         update["state_number"] = answer.state_number
+        changed.add("number")
         overrides["госномер"] = (
             f"портал по борту {row.board_number}"
             + (f", смена выбрана: {answer.selected_by}" if answer.shifts_total > 1 else "")
@@ -66,4 +74,4 @@ def with_plate(row: DeliveryRow, moment: datetime, ask: Ask) -> DeliveryRow:
     elif theirs and not ours:
         overrides["маршрут"] = f"портал говорит {theirs}, у нас маршрут не опознан"
 
-    return row.model_copy(update={**update, "overrides": overrides})
+    return row.model_copy(update={**update, "overrides": overrides}), frozenset(changed)

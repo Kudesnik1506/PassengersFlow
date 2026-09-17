@@ -51,28 +51,36 @@ def found(**kw) -> VehicleInfo:
 
 
 def test_the_portal_plate_fills_the_state_number():
-    out = with_plate(row(), MOMENT, answers(found()))
+    out, changed = with_plate(row(), MOMENT, answers(found()))
     assert out.state_number == "А000АА00"
     assert out.number == "А000АА00", "в графу заказчика идёт госномер"
+    assert changed == frozenset({"number"}), "графу мы изменили, и книга её пометит"
 
 
 def test_the_board_number_survives_the_replacement():
     """Бортовой — единственный ключ к справочнику, и он остаётся в строке."""
-    assert with_plate(row(), MOMENT, answers(found())).board_number == "1596"
+    assert with_plate(row(), MOMENT, answers(found()))[0].board_number == "1596"
 
 
 def test_a_vehicle_absent_from_the_portal_keeps_its_board_number():
-    """Нет в базе — пишем бортовой, а не выдумываем номер."""
-    out = with_plate(row(), MOMENT, answers(NotFound("1596", "нет в базе")))
+    """Нет в базе — пишем бортовой, а не выдумываем номер.
+
+    Графа при этом не помечается: в ней осталось то же, что записал оператор,
+    и красить нечего.
+    """
+    out, changed = with_plate(row(), MOMENT, answers(NotFound("1596", "нет в базе")))
     assert out.state_number is None
     assert out.number == "1596"
+    assert changed == frozenset()
     assert "нет в базе" in " ".join(out.overrides.values())
 
 
 def test_a_known_state_number_is_not_overwritten():
     """Прочитанный с кадра номер не подменяется: портал тут второе мнение."""
     ours = row(state_number="Т215АВ198")
-    assert with_plate(ours, MOMENT, answers(found())).state_number == "Т215АВ198"
+    out, changed = with_plate(ours, MOMENT, answers(found()))
+    assert out.state_number == "Т215АВ198"
+    assert changed == frozenset(), "ничего не меняли — помечать нечего"
 
 
 def test_a_trolley_is_not_sent_to_the_portal():
@@ -80,14 +88,14 @@ def test_a_trolley_is_not_sent_to_the_portal():
     def refuse(*a, **kw):
         raise AssertionError("портал не должен спрашиваться")
     trolley = row(kind=VehicleKind.TROLLEY, board_number="3144")
-    assert with_plate(trolley, MOMENT, refuse).number == "3144"
+    assert with_plate(trolley, MOMENT, refuse)[0].number == "3144"
 
 
 def test_a_row_without_a_board_number_is_left_alone():
     """Без бортового в портал не с чем идти."""
     def refuse(*a, **kw):
         raise AssertionError("портал не должен спрашиваться")
-    assert with_plate(row(board_number=None), MOMENT, refuse).number is None
+    assert with_plate(row(board_number=None), MOMENT, refuse)[0].number is None
 
 
 def test_a_route_the_portal_disputes_is_recorded_not_replaced():
@@ -97,6 +105,6 @@ def test_a_route_the_portal_disputes_is_recorded_not_replaced():
     выдать третье мнение за согласованное. Но и потерять разногласие нельзя —
     оно уходит в `overrides`, где разбирается спор о строке.
     """
-    out = with_plate(row(route="50"), MOMENT, answers(found(route="64")))
+    out, _ = with_plate(row(route="50"), MOMENT, answers(found(route="64")))
     assert out.route == "50"
     assert "64" in " ".join(out.overrides.values())
