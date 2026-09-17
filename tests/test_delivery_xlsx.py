@@ -85,11 +85,18 @@ def test_data_sheet_found_by_name_not_position(tmp_path):
     assert read_rows(path)[0].number == "Р512ОЕ198"
 
 
-def test_missing_number_leaves_cell_empty(tmp_path):
+def test_a_bus_without_a_plate_shows_its_board_number(tmp_path):
+    """Графа зовётся «Бортовой ИЛИ государственный» — пустой ей быть незачем."""
     path = tmp_path / "out.xlsx"
     write_rows(path, [sample(state_number=None)])
-    back = read_rows(path)[0]
-    assert back.number is None
+    assert read_rows(path)[0].number == "38099"
+
+
+def test_a_vehicle_with_no_number_at_all_leaves_the_cell_empty(tmp_path):
+    """Неизвестное остаётся пустым: выдумывать в эту графу нечего."""
+    path = tmp_path / "out.xlsx"
+    write_rows(path, [sample(state_number=None, board_number=None)])
+    assert read_rows(path)[0].number is None
 
 
 def test_board_number_is_not_published_to_customer(tmp_path):

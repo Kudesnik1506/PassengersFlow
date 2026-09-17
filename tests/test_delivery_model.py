@@ -60,11 +60,29 @@ def test_tram_reports_board_number():
     assert r.number == "5012"
 
 
-def test_bus_without_state_number_does_not_silently_fall_back_to_board():
-    """«Госномера пишем обязательно» — подстановка борта выглядела бы как успех."""
+def test_bus_without_state_number_falls_back_to_board():
+    """Графа зовётся «Бортовой ИЛИ государственный», и пустой она быть не должна.
+
+    Раньше здесь стоял `None`: «госномера пишем обязательно», и подстановка
+    борта выглядела бы как выполненное требование. Принятый заказчиком файл это
+    опроверг — графа заполнена во всех 312 строках, и у восьми автобусов в ней
+    бортовой номер («7364 - нет в базе», «7417»). Пустая графа не строже, а
+    просто беднее: заказчик теряет единственный ключ, по которому машину можно
+    опознать в справочнике.
+    """
     r = row(state_number=None)
-    assert r.number is None
-    assert r.board_number == "38099", "борт при этом не теряется"
+    assert r.number == "38099"
+
+
+def test_the_fallback_does_not_hide_the_missing_state_number():
+    """Подстановка не выдаёт себя за успех: приёмка по-прежнему жалуется.
+
+    Опасение, ради которого графу оставляли пустой, снимается здесь: правило
+    приёмки смотрит на `state_number`, а не на то, что напечатано в графе.
+    """
+    from paxcount.delivery.validate import validate
+    problems = validate([row(state_number=None)])
+    assert any(p.field == "state_number" for p in problems)
 
 
 def test_board_number_survives_replacement():
