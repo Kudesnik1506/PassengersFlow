@@ -300,6 +300,39 @@ def _with_kept(values: list[str], kept: dict[str, str]) -> list[str]:
     return out
 
 
+# Сколько букв имени должно совпасть, чтобы считать замок нашим. Excel у длинных
+# имён срезает начало (`~$blitsa_...` для `Tablitsa_...`), поэтому сравнивается
+# хвост. Восьми хватает, чтобы не спутать две книги в одной папке, и мало,
+# чтобы промахнуться мимо усечённого имени.
+_LOCK_TAIL = 8
+
+
+def opened_by(book: Path) -> str | None:
+    """Имя файла-замка, если книга открыта в Excel или LibreOffice. Иначе `None`.
+
+    Сборка заменяет файл целиком, а редактор держит свою копию в памяти и
+    подмены не видит. Дальше решает случай: сохранит человек — ляжет поверх
+    пересборки, пересоберём мы — ляжет поверх его правок. Оба исхода это
+    потеря чужой работы, и ни один не виден в тот момент, когда случается.
+
+    Ошибаться здесь безопаснее в сторону ложной тревоги: лишний отказ стоит
+    одной команды, пропущенный замок — чужого дня работы.
+    """
+    folder = book.parent
+    if not folder.is_dir():
+        return None
+    name = book.name
+    tail = name[-_LOCK_TAIL:] if len(name) > _LOCK_TAIL else name
+    for other in sorted(folder.iterdir()):
+        if other.name.startswith("~$"):
+            if name.endswith(other.name[2:]) or other.name[2:].endswith(tail):
+                return other.name
+        # LibreOffice: `.~lock.<имя>#`
+        if other.name == f".~lock.{name}#":
+            return other.name
+    return None
+
+
 def fill_template(
     template: Path,
     rows: list[DeliveryRow],

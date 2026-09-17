@@ -46,7 +46,7 @@ from paxcount.delivery.model import VehicleKind  # noqa: E402
 from paxcount.delivery.reconcile import VisitFacts  # noqa: E402
 from paxcount.delivery.agreement import Agreement, agree  # noqa: E402
 from paxcount.delivery.fill import (  # noqa: E402
-    carried_over, fill_template, orphaned,
+    carried_over, fill_template, opened_by, orphaned,
 )
 from paxcount.delivery.marking import (  # noqa: E402
     marks_for, marks_for_duplicate, marks_for_our_measurement, marks_for_repair,
@@ -409,10 +409,16 @@ def main() -> int:
         # Книга заказчика перезаписывается ТОЛЬКО когда переносить нечего сверх
         # найденного: строка, потерявшая приметы, унесёт с собой его ручной ввод,
         # а восстановить его будет неоткуда (решение 079).
+        lock = opened_by(args.book)
         if lost:
             console.print(f"[red]книга заказчика не тронута: {len(lost)} строк "
                            "прошлой книги не сопоставлены, ручной ввод в них "
                            "пропал бы[/red]")
+        elif lock is not None:
+            console.print(f"[red]книга заказчика открыта ({lock}) — не трогаю. "
+                           "Редактор держит свою копию и подмены файла не видит: "
+                           "чья-то работа пропала бы наверняка. Закройте книгу и "
+                           "повторите[/red]")
         else:
             targets.append(args.book)
     for target in targets:

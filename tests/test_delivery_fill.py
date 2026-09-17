@@ -393,3 +393,54 @@ def test_the_row_key_ignores_columns_the_customer_may_fill():
     ours = row(hours=6, minutes=59, route=None, state_number="А000АА00")
     kept = carried_over(previous, [ours])
     assert kept == {2: {"H": "225", "I": "А"}}, "узналась, и оба значения на месте"
+
+
+# ---- Открытую книгу не перезаписываем -----------------------------------------
+#
+# Сборка заменяет файл целиком, а Excel держит свою копию в памяти и подмены не
+# видит. Дальше решает случай: сохранит заказчик — ляжет поверх пересборки,
+# пересоберу я — ляжет поверх его правок. Оба исхода это потеря чужой работы,
+# и ни один из них не виден в момент, когда происходит.
+
+
+def test_an_open_workbook_is_recognised_by_the_lock_file(tmp_path):
+    from paxcount.delivery.fill import opened_by
+
+    book = tmp_path / "Книга.xlsx"
+    book.write_bytes(b"")
+    assert opened_by(book) is None, "замка нет — файл закрыт"
+    lock = tmp_path / "~$Книга.xlsx"
+    lock.write_bytes(b"")
+    assert opened_by(book) == lock.name
+
+
+def test_excel_truncating_the_lock_name_is_still_recognised(tmp_path):
+    """Excel у длинных имён срезает начало: замок — ХВОСТ имени, а не имя.
+
+    Промах здесь опаснее ложной тревоги: не увидев замка, сборка запишет в
+    открытый файл, и потеря обнаружится через день.
+    """
+    from paxcount.delivery.fill import opened_by
+
+    book = tmp_path / "Tablitsa_dlya_zapolnenia_2026.xlsx"
+    book.write_bytes(b"")
+    (tmp_path / "~$blitsa_dlya_zapolnenia_2026.xlsx").write_bytes(b"")
+    assert opened_by(book) == "~$blitsa_dlya_zapolnenia_2026.xlsx"
+
+
+def test_a_lock_of_another_workbook_is_not_ours(tmp_path):
+    from paxcount.delivery.fill import opened_by
+
+    book = tmp_path / "Книга.xlsx"
+    book.write_bytes(b"")
+    (tmp_path / "~$Другая.xlsx").write_bytes(b"")
+    assert opened_by(book) is None
+
+
+def test_the_libreoffice_lock_counts_too(tmp_path):
+    from paxcount.delivery.fill import opened_by
+
+    book = tmp_path / "Книга.xlsx"
+    book.write_bytes(b"")
+    (tmp_path / ".~lock.Книга.xlsx#").write_bytes(b"")
+    assert opened_by(book) == ".~lock.Книга.xlsx#"
