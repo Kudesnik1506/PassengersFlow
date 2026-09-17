@@ -12,6 +12,37 @@ PERSON_CLASSES = {"person"}
 VEHICLE_CLASSES = {"bus", "truck", "train", "car"}
 
 
+def tracker_yaml(settings, out_dir: Path | None = None) -> str:
+    """Путь к конфигу трекера с нужной памятью.
+
+    Ultralytics принимает трекер ТОЛЬКО путём к файлу: `track.py` зовёт
+    `check_yaml(predictor.args.tracker)`, а словарь туда не передать. Поэтому
+    файл с нужным `track_buffer` порождается здесь, из штатного конфига —
+    копией, а не написанным заново: всё остальное в нём (порог IoU,
+    компенсация движения камеры) остаётся ровно тем, что проверено.
+
+    При штатной памяти возвращается имя штатного конфига: лишних файлов на
+    диске не плодим, и ключ кэша у таких прогонов не меняется.
+    """
+    from .. import settings as cfg
+
+    if settings.track_buffer == cfg.DEFAULT_TRACK_BUFFER:
+        return settings.tracker
+
+    import yaml
+    from ultralytics.utils import ROOT as ULTRA_ROOT
+
+    base = Path(ULTRA_ROOT) / "cfg" / "trackers" / Path(settings.tracker).name
+    data = yaml.safe_load(base.read_text(encoding="utf-8"))
+    data["track_buffer"] = settings.track_buffer
+
+    target = Path(out_dir or (cfg.CACHE_DIR / "trackers"))
+    target.mkdir(parents=True, exist_ok=True)
+    path = target / f"{Path(settings.tracker).stem}_b{settings.track_buffer}.yaml"
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    return str(path)
+
+
 def pick_device(requested: str | None = None) -> str:
     if requested:
         return requested

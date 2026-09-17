@@ -94,6 +94,10 @@ EDGE_TOUCH_PX = 8.0
 CROP_MARGIN_PX = 140.0
 
 
+# Память трекера по умолчанию — из штатного botsort.yaml ultralytics.
+DEFAULT_TRACK_BUFFER = 30
+
+
 @dataclass(frozen=True)
 class DetectorSettings:
     """Всё, что влияет на результат детекции, а значит и на ключ кэша."""
@@ -104,12 +108,32 @@ class DetectorSettings:
     tracker: str = "botsort.yaml"
     stride: int = 1
     conf: float = 0.25
+    # Сколько ОБРАБОТАННЫХ кадров трекер держит потерянного человека.
+    # Умолчание — значение из штатного botsort.yaml; проверено по исходнику
+    # ultralytics: `max_frames_lost = args.track_buffer`, без пересчёта по
+    # частоте кадров и без предела сверху. Отсюда главное следствие: величина
+    # задана в кадрах, значит при шаге 3 это три секунды, а при шаге 1 — одна.
+    # Меняя шаг, число надо менять вместе с ним, иначе память поедет молча.
+    track_buffer: int = DEFAULT_TRACK_BUFFER
+
+    def memory_seconds(self, fps: float) -> float:
+        """Память трекера в секундах записи — величина, которая имеет смысл."""
+        return self.track_buffer * self.stride / fps
 
     def tag(self) -> str:
-        return (
+        """Ключ кэша. Память дописывается, только когда отличается от штатной.
+
+        Иначе появление поля переименовало бы КАЖДЫЙ уже посчитанный кэш, хотя
+        треки в них не изменились, — и боевые записи пришлось бы прогонять
+        заново без всякой причины.
+        """
+        tag = (
             f"{Path(self.weights).stem}_{self.imgsz}_"
             f"{Path(self.tracker).stem}_s{self.stride}_c{self.conf}"
         )
+        if self.track_buffer != DEFAULT_TRACK_BUFFER:
+            tag += f"_b{self.track_buffer}"
+        return tag
 
 
 DETECTOR = DetectorSettings()
@@ -120,6 +144,14 @@ DETECTOR = DetectorSettings()
 # ключ кэша (core/trackdata.cache_path), поэтому боевой и тестовый кэш не
 # путаются между собой.
 PROD_STRIDE = 3
+
+# Стенд считает не весь файл, а шесть окон стоянок по 50 с — довод про «часы
+# внутри git push» к нему не относится, и там кадры смотрятся подряд. Память
+# трекера поднимается вместе с шагом: 90 кадров при шаге 1 — это те же три
+# секунды, что 30 кадров при шаге 3 у боевого пути. Это не ослабление сшивки
+# (запрет 5), а удержание величины постоянной при смене единицы.
+BENCH_STRIDE = 1
+BENCH_TRACK_BUFFER = 90
 
 
 def detector_for(video: Path) -> DetectorSettings:

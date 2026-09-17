@@ -59,11 +59,14 @@ def tracks_in_windows(
     if not pending:
         return out
 
-    from ..core.detect import Detector
+    from ..core.detect import Detector, tracker_yaml
 
     meta = probe(video)
+    # Конфиг трекера берётся у настроек, а не напрямую `st.tracker`: память
+    # трекера задана в кадрах и обязана расти вместе с частотой, иначе переход
+    # на покадровость втрое её укоротит (settings.DetectorSettings).
     detector = Detector(weights=st.weights, device=device, conf=st.conf,
-                         imgsz=st.imgsz, tracker=st.tracker)
+                         imgsz=st.imgsz, tracker=tracker_yaml(st))
     built = {
         key: TrackData(video=video.name, width=meta.width, height=meta.height,
                         fps=meta.fps, stride=st.stride)
