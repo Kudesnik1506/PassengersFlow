@@ -17,7 +17,13 @@ from datetime import datetime
 
 import pytest
 
-from paxcount.delivery.timeline import FileSlot, Session, parse_slot, sessions_from_names
+from paxcount.delivery.timeline import (
+    FileSlot,
+    NoFootageError,
+    Session,
+    parse_slot,
+    sessions_from_names,
+)
 
 NAMES_MORNING = [
     "2026-05-19 - 06-59-54 - 1715-15182 - 01",
@@ -164,3 +170,137 @@ def test_session_knows_its_date_and_stop():
     session: Session = sessions_from_names(NAMES_MORNING)[0]
     assert session.date.isoformat() == "2026-05-19"
     assert session.stop == "1715-15182"
+
+
+# ---- Три камеры на одной остановке -------------------------------------------
+#
+# Боевая съёмка пришла с трёх камер, и имя файла несёт их номер: `22739_1` —
+# остановка 22739, камера 1. Без разбора этого поля весь номер уходил в
+# `stop`, и три камеры выглядели тремя разными остановками.
+#
+# Хуже другое: камеры пишут по-разному. Первая режет ровно по 25 минут, третья
+# по 10, вторая — кусками от минуты до четверти часа. И стартуют они вразнобой:
+# 06:56:30, 06:55:02, 06:50:46. Пока длительность куска мерялась по следующему
+# слоту общего списка, соседом оказывался кусок чужой камеры — с чужим шагом и
+# чужим временем старта.
+
+CAM_NAMES = [
+    "2026-09-10 - 06-56-30 - 22739_1 - 01",   # камера 1, шаг 25 минут
+    "2026-09-10 - 07-21-30 - 22739_1 - 02",
+    "2026-09-10 - 06-55-02 - 22739_2 - 01",   # камера 2, кусок 9 минут
+    "2026-09-10 - 07-04-02 - 22739_2 - 02",
+]
+
+
+def test_camera_is_read_from_the_name():
+    slot = parse_slot("2026-09-10 - 06-56-30 - 22739_1 - 01")
+    assert slot.stop == "22739"
+    assert slot.camera == "1"
+
+
+def test_stop_without_camera_still_parses():
+    """Принятая смена заказчика названа `1715-15182` — без номера камеры."""
+    slot = parse_slot("2026-05-19 - 06-59-54 - 1715-15182 - 01")
+    assert slot.stop == "1715-15182"
+    assert slot.camera == ""
+
+
+def test_cameras_do_not_collapse_into_one_session():
+    sessions = sessions_from_names(CAM_NAMES)
+    assert {s.camera for s in sessions} == {"1", "2"}
+    assert len(sessions) == 2
+
+
+def test_duration_is_measured_within_one_camera():
+    """Сосед для измерения ищется у своей камеры, иначе шаг выйдет чужой."""
+    by_camera = {s.camera: s for s in sessions_from_names(CAM_NAMES)}
+    assert by_camera["1"].slots[0].duration_s == 1500.0
+    assert by_camera["2"].slots[0].duration_s == 540.0
+
+
+def test_same_start_on_two_cameras_gives_two_slots():
+    """Одинаковое время у разных камер — два куска, а не один.
+
+    `FileSlot` складывается в множество при отсеивании дублей; без камеры в
+    ключе два таких имени слиплись бы в один слот, и вторая камера исчезла бы
+    молча.
+    """
+    names = ["2026-09-10 - 07-00-00 - 22739_1 - 05",
+             "2026-09-10 - 07-00-00 - 22739_2 - 05"]
+    assert sum(len(s.slots) for s in sessions_from_names(names)) == 2
+
+
+# ---- Настоящая длительность и разрывы записи --------------------------------
+#
+# Длительность куска раньше всегда мерялась «до старта соседа» — расстояние по
+# именам, а не по факту записи. На боевой К2 это молча прятало разрыв: между
+# двумя файлами утренней смены реально лежит 1074 с дыры (07:26:42–07:44:36,
+# главный провал в разгар пика), а старая мера читала это как «файл шёл до
+# самого следующего», то есть 1074 с несуществующей записи внутри слота. Визит,
+# чьё смещение попало бы в эту дыру, получил бы файл и позицию в нём — то есть
+# кадр, которого там нет.
+#
+# `duration_of` — внешняя мера (в бою — ffprobe), а не догадка модуля: часть
+# длительности куска эта функция не обязана знать заранее (тестам достаточно
+# синтетики), а часть — обязана прийти реальной.
+
+GAP_NAMES = [
+    "2026-09-10 - 07-00-00 - 22739_2 - 01",  # реально пишет 900 с из 1500 до следующего
+    "2026-09-10 - 07-25-00 - 22739_2 - 02",  # 1500 с без разрыва
+    "2026-09-10 - 07-50-00 - 22739_2 - 03",
+]
+REAL_DURATIONS = {
+    "2026-09-10 - 07-00-00 - 22739_2 - 01": 900.0,
+    "2026-09-10 - 07-25-00 - 22739_2 - 02": 1500.0,
+    "2026-09-10 - 07-50-00 - 22739_2 - 03": 600.0,
+}
+
+
+def test_without_duration_of_behaviour_is_unchanged():
+    """Старые вызовы без `duration_of` продолжают мерить длительность по соседу."""
+    session = sessions_from_names(GAP_NAMES)[0]
+    assert session.slots[0].duration_s == pytest.approx(1500.0)
+    assert session.gaps_s() == []
+
+
+def test_real_duration_shorter_than_neighbour_gap_is_a_gap():
+    session = sessions_from_names(GAP_NAMES, duration_of=REAL_DURATIONS.get)[0]
+    assert session.slots[0].real_duration_s == pytest.approx(900.0)
+    assert session.slots[0].gap_after_s == pytest.approx(600.0)
+
+
+def test_slot_with_no_gap_reports_zero():
+    session = sessions_from_names(GAP_NAMES, duration_of=REAL_DURATIONS.get)[0]
+    assert session.slots[1].gap_after_s == pytest.approx(0.0)
+
+
+def test_session_lists_gaps_on_its_own_offset_scale():
+    """Дыра начинается на 900-й секунде смены (конец реальной записи) и длится 600 с."""
+    session = sessions_from_names(GAP_NAMES, duration_of=REAL_DURATIONS.get)[0]
+    assert session.gaps_s() == [(900.0, 600.0)]
+
+
+def test_locate_inside_a_gap_refuses_to_point_at_a_file():
+    """Смещение внутри дыры — не «дальше в этом файле», а отсутствие записи."""
+    session = sessions_from_names(GAP_NAMES, duration_of=REAL_DURATIONS.get)[0]
+    with pytest.raises(NoFootageError):
+        session.locate(1200.0)  # 900..1500 — дыра
+
+
+def test_locate_right_after_the_gap_reaches_the_next_file():
+    session = sessions_from_names(GAP_NAMES, duration_of=REAL_DURATIONS.get)[0]
+    slot, offset = session.locate(1500.0)
+    assert slot.index == 2 and offset == pytest.approx(0.0)
+
+
+def test_at_edge_covers_gap_boundaries_too():
+    """N/A встаёт не только на краях смены, но и на краях каждой дыры (план, шаг 0б)."""
+    session = sessions_from_names(GAP_NAMES, duration_of=REAL_DURATIONS.get)[0]
+    assert session.at_edge(897.0, guard_s=5.0) is True   # перед дырой
+    assert session.at_edge(1503.0, guard_s=5.0) is True  # сразу после дыры
+    assert session.at_edge(700.0, guard_s=5.0) is False  # обычная запись
+
+
+def test_no_footage_error_is_a_value_error():
+    """Старый код, ловящий ValueError от locate(), продолжает его ловить."""
+    assert issubclass(NoFootageError, ValueError)

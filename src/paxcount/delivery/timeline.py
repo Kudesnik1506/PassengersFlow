@@ -18,9 +18,18 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date as Date
 from datetime import datetime, timedelta
+
+
+class NoFootageError(ValueError):
+    """Смещение попадает в разрыв записи — там нет ни файла, ни кадра.
+
+    Наследует ValueError: код, который уже ловит ValueError от `locate()`
+    (диапазон смены), продолжает работать и здесь без правки.
+    """
 
 # Длительность куска, когда измерить её не по чему: смена из одного файла.
 # Не «правило», а последнее средство — обычно длительность берётся из соседа
@@ -28,11 +37,17 @@ from datetime import datetime, timedelta
 # незамеченной.
 DEFAULT_SLOT_SECONDS = 600.0
 
-# Разрыв, начиная с которого куски считаются разными сменами. Съёмка идёт тремя
-# окнами (утро, день, вечер) с перерывами в часы, а куски внутри окна встык.
-# Порог в полторы длительности куска разделяет эти два случая с запасом и не
-# требует знать расписание.
-SESSION_GAP_FACTOR = 1.5
+# Разрыв, начиная с которого куски считаются разными сменами. Порог абсолютный,
+# и это следствие замера, а не удобства: в 125 боевых файлах трёх камер самый
+# длинный кусок — 31 минута (регистратор длиннее не пишет), а самый короткий
+# перерыв между сменами — 119 минут. Час лежит между ними с двукратным запасом
+# в обе стороны.
+#
+# Относительный порог здесь не работает ни в какую сторону. Камеры пишут
+# по-разному: первая ровно по 25 минут, третья по 10, вторая кусками от 23 с
+# до 31 минуты. Полторы медианы разрезали бы смену второй камеры посередине,
+# а пять медиан не разделили бы смены первой.
+SESSION_GAP_S = 3600.0
 
 _NAME_RE = re.compile(
     r"^(?P<date>\d{4}-\d{2}-\d{2})"
@@ -55,13 +70,39 @@ class FileSlot:
     index: int
     stop: str
     name: str
+    # Номер камеры из имени файла: `22739_2` — остановка 22739, камера 2.
+    # Пустая строка у съёмки без камер в имени (так названа принятая смена
+    # заказчика). Стоит перед `duration_s`, чтобы позиционные вызовы из
+    # четырёх аргументов продолжали значить то же, что и раньше.
+    camera: str = ""
     # Заполняется при сборке смены, когда виден сосед справа. Одиночный слот
     # соседа не имеет и остаётся с длительностью по умолчанию.
+    #
+    # Это расстояние ДО СТАРТА СЛЕДУЮЩЕГО ФАЙЛА, а не длительность самой
+    # записи — при разрыве в записи (боевая К2) они расходятся, и `duration_s`
+    # молча накрывает собой и файл, и дыру после него. Именно поэтому
+    # `at`/`locate` продолжают работать с ним как со сквозной шкалой времени, а
+    # настоящая длительность записи — отдельное поле ниже.
     duration_s: float = field(default=DEFAULT_SLOT_SECONDS, compare=False)
+    # Настоящая длительность ЗАПИСИ (ffprobe), а не расстояние до соседа.
+    # `None` — не измерена: тогда файл считается идущим без разрыва до конца
+    # `duration_s`, как и раньше `sessions_from_names` без `duration_of`.
+    real_duration_s: float | None = field(default=None, compare=False)
 
     @property
     def date(self) -> Date:
         return self.start.date()
+
+    @property
+    def gap_after_s(self) -> float:
+        """Разрыв записи между концом этого файла и стартом следующего.
+
+        0 — либо разрыва нет, либо настоящая длительность не измерена (тогда
+        файл считается непрерывным до соседа, как раньше).
+        """
+        if self.real_duration_s is None:
+            return 0.0
+        return max(0.0, self.duration_s - self.real_duration_s)
 
     def at(self, offset_s: float) -> datetime:
         """Абсолютное время момента, отстоящего на `offset_s` от начала куска."""
@@ -102,9 +143,24 @@ def parse_slot(name: str) -> FileSlot:
         )
     except ValueError as exc:
         raise ValueError(f"дата или время в имени файла не существуют: {name!r}") from exc
+    stop, camera = _split_camera(match["stop"].strip())
     return FileSlot(
-        start=start, index=int(match["index"]), stop=match["stop"].strip(), name=stem.strip()
+        start=start, index=int(match["index"]), stop=stop, name=stem.strip(), camera=camera
     )
+
+
+def _split_camera(field_value: str) -> tuple[str, str]:
+    """Отделяет номер камеры от номера остановки: `22739_2` → `22739`, `2`.
+
+    Разделитель — подчёркивание, и это не догадка: так названы все 103 файла
+    боевой съёмки. Принятая смена заказчика (`1715-15182`) подчёркивания не
+    содержит вовсе и остаётся остановкой без камеры — старые имена читаются
+    по-прежнему.
+    """
+    stop, sep, tail = field_value.rpartition("_")
+    if sep and tail.isdigit():
+        return stop, tail
+    return field_value, ""
 
 
 @dataclass(frozen=True)
@@ -131,6 +187,11 @@ class Session:
         return self.slots[0].stop
 
     @property
+    def camera(self) -> str:
+        """Смена принадлежит одной камере: три камеры — три ленты, не одна."""
+        return self.slots[0].camera
+
+    @property
     def duration_s(self) -> float:
         return sum(s.duration_s for s in self.slots)
 
@@ -138,7 +199,9 @@ class Session:
         """Переводит сквозное смещение смены в пару «кусок, смещение в нём».
 
         Нужно там, где надо открыть конкретный файл (нарезка кадров) или
-        записать его имя в колонку N.
+        записать его имя в колонку N. Смещение внутри разрыва записи (боевая
+        К2 теряет так 1074 с в главный провал) — не «дальше в этом файле», а
+        отсутствие записи: там нет ни файла, ни кадра, который можно открыть.
         """
         if offset_s < 0 or offset_s > self.duration_s:
             raise ValueError(
@@ -146,10 +209,37 @@ class Session:
             )
         left = offset_s
         for slot in self.slots:
-            if left < slot.duration_s or slot is self.slots[-1]:
+            is_last = slot is self.slots[-1]
+            if left < slot.duration_s or is_last:
+                # У последнего куска duration_s — не измеренное расстояние до
+                # соседа, а оценка (см. sessions_from_names): настоящего
+                # соседа нет, и утверждать про дыру после него нечем.
+                if not is_last and slot.real_duration_s is not None and left > slot.real_duration_s:
+                    raise NoFootageError(
+                        f"смещение {offset_s:.1f} с попадает в разрыв записи после "
+                        f"{slot.name!r} ({slot.real_duration_s:.1f} с записи, "
+                        f"{slot.gap_after_s:.1f} с дыры)"
+                    )
                 return slot, left
             left -= slot.duration_s
         raise AssertionError("недостижимо: последний кусок возвращается выше")
+
+    def gaps_s(self) -> list[tuple[float, float]]:
+        """Разрывы записи на сквозной шкале смены: (где начинается, длина).
+
+        Пусто, если настоящая длительность файлов не измерена (`duration_of`
+        не передавался в `sessions_from_names`) — тогда смена считается
+        непрерывной, как и раньше. Последний кусок не участвует: его
+        `duration_s` — оценка, а не измеренное расстояние до соседа, и дыру
+        после него утверждать нечем.
+        """
+        gaps: list[tuple[float, float]] = []
+        cursor = 0.0
+        for slot in self.slots[:-1]:
+            if slot.gap_after_s > 0:
+                gaps.append((cursor + slot.real_duration_s, slot.gap_after_s))
+            cursor += slot.duration_s
+        return gaps
 
     def at(self, offset_s: float) -> datetime:
         return self.start + timedelta(seconds=offset_s)
@@ -159,32 +249,52 @@ class Session:
         return moment.hour, moment.minute
 
     def at_edge(self, offset_s: float, guard_s: float) -> bool:
-        """Не у самого ли края смены момент — то есть не тот ли это случай N/A.
+        """Не у самого ли края смены или разрыва момент — случай N/A.
 
         Инструкция: если в начале съёмки транспорт уже стоит с открытыми
-        дверями, в «Зашло» и «Вышло» ставится N/A; то же в конце. Речь о начале
-        и конце СЪЁМКИ, а не каждого куска: внутри смены запись непрерывна, и
-        поводов для N/A там нет.
+        дверями, в «Зашло» и «Вышло» ставится N/A; то же в конце. Раньше речь
+        шла только о начале и конце СЪЁМКИ — но разрыв записи внутри смены
+        (боевая К2, 1074 с в разгар пика) устроен так же: визит, начавшийся
+        прямо перед дырой или сразу после неё, виден лишь частично, и это тот
+        же случай N/A, а не полноценный счёт (план, шаг 0б).
         """
-        return offset_s <= guard_s or offset_s >= self.duration_s - guard_s
+        if offset_s <= guard_s or offset_s >= self.duration_s - guard_s:
+            return True
+        for gap_start, gap_len in self.gaps_s():
+            if gap_start - guard_s <= offset_s <= gap_start + gap_len + guard_s:
+                return True
+        return False
 
 
 def sessions_from_names(
-    names: list[str], default_slot_s: float = DEFAULT_SLOT_SECONDS
+    names: list[str],
+    default_slot_s: float = DEFAULT_SLOT_SECONDS,
+    duration_of: Callable[[str], float] | None = None,
 ) -> list[Session]:
-    """Собирает смены из имён файлов: сортирует, меряет куски, режет по разрывам."""
+    """Собирает смены из имён файлов: сортирует, меряет куски, режет по разрывам.
+
+    `duration_of` — внешняя мера настоящей длительности записи по имени файла
+    (в бою — ffprobe, см. `tools/coverage.py`). Без неё поведение не меняется:
+    длительность куска по-прежнему берётся по соседу, а разрывов внутри смены
+    не видно — так работал модуль до появления карты покрытия.
+    """
     slots = sorted({parse_slot(n) for n in names})
     if not slots:
         return []
 
-    groups: list[list[FileSlot]] = [[slots[0]]]
-    for prev, cur in zip(slots, slots[1:]):
-        gap = (cur.start - prev.start).total_seconds()
-        expected = _measure(prev, cur, default_slot_s)
-        if gap > expected * SESSION_GAP_FACTOR:
-            groups.append([cur])
-        else:
-            groups[-1].append(cur)
+    # Сначала по камере, и только потом по разрывам. Камеры пишут с разным
+    # шагом — 25 минут, 10 минут и куски переменной длины — и стартуют
+    # вразнобой. В общем отсортированном списке соседом куска оказывался
+    # кусок чужой камеры, и длительность мерялась по чужому шагу.
+    groups: list[list[FileSlot]] = []
+    for key in sorted({(s.stop, s.camera) for s in slots}):
+        track = [s for s in slots if (s.stop, s.camera) == key]
+        groups.append([track[0]])
+        for prev, cur in zip(track, track[1:]):
+            if (cur.start - prev.start).total_seconds() > SESSION_GAP_S:
+                groups.append([cur])
+            else:
+                groups[-1].append(cur)
 
     sessions: list[Session] = []
     for group in groups:
@@ -198,17 +308,14 @@ def sessions_from_names(
                 seconds = measured[-1].duration_s
             else:
                 seconds = default_slot_s
+            real = duration_of(slot.name) if duration_of is not None else None
             measured.append(
                 FileSlot(
                     start=slot.start, index=slot.index, stop=slot.stop,
-                    name=slot.name, duration_s=float(seconds),
+                    name=slot.name, camera=slot.camera, duration_s=float(seconds),
+                    real_duration_s=None if real is None else float(real),
                 )
             )
         sessions.append(Session(slots=tuple(measured)))
     return sessions
 
-
-def _measure(prev: FileSlot, cur: FileSlot, default_s: float) -> float:
-    """Ожидаемая длительность куска: по факту, если он измерим, иначе объявленная."""
-    gap = (cur.start - prev.start).total_seconds()
-    return gap if 0 < gap <= default_s * SESSION_GAP_FACTOR else default_s
