@@ -100,3 +100,27 @@ def test_a_duplicate_press_marks_the_whole_row():
     """
     from paxcount.delivery.marking import marks_for_duplicate
     assert marks_for_duplicate() == set(COLUMNS)
+
+
+# ---- Наш счёт в чужой строке -------------------------------------------------
+#
+# Строка машины, которая нашлась у оператора, выглядит как все остальные: вид,
+# маршрут, размер, борт — его. Наше в ней только «Вышло» и «Зашло», и в ленте из
+# трёхсот строк эти две клетки не найти. А ведь ради них всё и делается.
+
+def test_our_count_is_marked_in_the_operators_row():
+    """Счёт — наше измерение, и в книге он обязан быть виден."""
+    from paxcount.delivery.marking import marks_for_our_measurement
+    assert marks_for_our_measurement(row()) == {"K", "L"}
+
+
+def test_a_row_without_a_count_is_not_marked():
+    """Не считали — помечать нечего: N/A не измерение."""
+    from paxcount.delivery.marking import marks_for_our_measurement
+    assert marks_for_our_measurement(row(alighted=None, boarded=None)) == set()
+
+
+def test_the_comment_code_is_ours_too():
+    """Код таблицы 2 выведен из нашей разметки дверей, а не взят у оператора."""
+    from paxcount.delivery.marking import marks_for_our_measurement
+    assert "M" in marks_for_our_measurement(row(comment=7))

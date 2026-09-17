@@ -45,7 +45,7 @@ from paxcount.delivery.reconcile import VisitFacts  # noqa: E402
 from paxcount.delivery.agreement import Agreement, agree  # noqa: E402
 from paxcount.delivery.fill import fill_template  # noqa: E402
 from paxcount.delivery.marking import (  # noqa: E402
-    marks_for, marks_for_duplicate, marks_for_repair,
+    marks_for, marks_for_duplicate, marks_for_our_measurement, marks_for_repair,
 )
 from paxcount.delivery.model import Occupancy  # noqa: E402
 from paxcount.delivery.operator import (  # noqa: E402
@@ -245,7 +245,9 @@ def main() -> int:
         elif args.operator_export is None:
             continue
         else:
-            marks = marks_for(deals[id(entry.row)])
+            # Наш счёт в чужой строке — тоже наше утверждение, и без пометки
+            # его в ленте из трёхсот строк не найти.
+            marks = marks_for(deals[id(entry.row)]) | marks_for_our_measurement(entry.row)
         if marks:
             highlight[i] = marks
 
