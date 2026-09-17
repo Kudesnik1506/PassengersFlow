@@ -111,3 +111,16 @@ def test_the_file_name_takes_the_date_apart_instead_of_swapping_dashes():
     assert rows[0].date == "10.09.2026", "в графе бланка — формат заказчика"
     assert book_filename(rows, group="1317", stop="22739") == \
         "2026-09-10-1317-22739.xlsx"
+
+
+def test_an_unknown_group_does_not_leave_a_hole_in_the_file_name():
+    """Пустая графа в имени даёт «2026-09-10--22739» — это читается как дефект.
+
+    Группа ОП административная, и до её получения книга всё равно собирается.
+    Имя файла при этом обязано остаться именем, а не следом отсутствующего
+    поля: заказчик судит о поставке в том числе по имени файла.
+    """
+    visits = [Visit(facts("2", "2026-09-10T07:05:00", "62"), K2_FILE)]
+    rows = book(in_route_order(visits, RECORDS), group="", stop="22739",
+                 operator="Иванов Иван")
+    assert book_filename(rows, group="", stop="22739") == "2026-09-10-22739.xlsx"

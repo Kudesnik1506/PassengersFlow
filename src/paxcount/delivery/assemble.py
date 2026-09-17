@@ -108,4 +108,9 @@ def book_filename(rows: list[DeliveryRow], *, group: str, stop: str) -> str:
     находится, — поэтому дата разбирается, а не переставляется.
     """
     day = datetime.strptime(rows[0].date, "%d.%m.%Y").date()
+    if not group:
+        # Группа ОП административная и до её получения бывает неизвестна.
+        # Пустая часть оставила бы в имени двойной дефис — след отсутствующего
+        # поля, который читается как дефект поставки.
+        return f"{day.isoformat()}-{stop}.xlsx"
     return delivery_filename(day.isoformat(), group, stop)

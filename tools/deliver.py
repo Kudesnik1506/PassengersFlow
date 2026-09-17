@@ -40,13 +40,24 @@ from paxcount.delivery.assemble import (  # noqa: E402
 )
 from paxcount.delivery.model import VehicleKind  # noqa: E402
 from paxcount.delivery.reconcile import VisitFacts  # noqa: E402
+from paxcount.delivery.agreement import agree  # noqa: E402
+from paxcount.delivery.fill import fill_template  # noqa: E402
+from paxcount.delivery.model import Occupancy  # noqa: E402
+from paxcount.delivery.operator import for_stop, read_export  # noqa: E402
 from paxcount.delivery.validate import validate  # noqa: E402
 from paxcount.delivery.xlsx import write_rows  # noqa: E402
 from paxcount.settings import DATA_DIR, OUT_DIR  # noqa: E402
 from paxcount.truth import load_door_layout, visit_moment  # noqa: E402
 from paxcount import truth_rows  # noqa: E402
 
-console = Console(width=160)
+console = Console(width=170)
+
+# Поле сверки → графа бланка. Время занимает две графы, поэтому его здесь нет:
+# оно разворачивается в C и D там, где строится пометка.
+FIELD_COLUMN = {"kind": "F", "route": "H", "size": "J", "board": "G"}
+# Графы, которые подтверждал бы оператор, будь у него запись. Когда он молчит,
+# подтверждения нет ни у одной из них — и это не то же самое, что совпадение.
+UNCONFIRMED = {"F", "G", "H", "I", "J"}
 
 
 def _kind(text: str | None) -> VehicleKind | None:
@@ -107,8 +118,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--doors", type=Path, default=DATA_DIR / "truth" / "doors")
     parser.add_argument("--stop", default="22739", help="номер ОП — графа E бланка")
-    parser.add_argument("--group", required=True, help="группа ОП — графа A бланка")
-    parser.add_argument("--operator", required=True, help="фамилия расшифровщика")
+    parser.add_argument("--group", default="", help="группа ОП — графа A бланка")
+    parser.add_argument("--operator", default="", help="фамилия расшифровщика")
+    parser.add_argument("--operator-export", type=Path, default=None,
+                        help="выгрузка оператора: сверка и наполненность")
+    parser.add_argument("--template", type=Path, default=None,
+                        help="шаблон заказчика: книга пишется по нему, со списками и стилями")
     parser.add_argument("--out", type=Path, default=OUT_DIR)
     args = parser.parse_args()
 
@@ -121,19 +136,53 @@ def main() -> int:
     placed = in_route_order(visits, records)
     rows = book(placed, group=args.group, stop=args.stop, operator=args.operator)
 
+    # Сверка с оператором. Он второе независимое свидетельство, а не истина
+    # (решение 025): его данные не подменяют наши, а показывают расхождение.
+    # Наполненность — исключение: своей модели для неё нет (решение 032).
+    highlight: dict[int, set[str]] = {}
+    agreements = []
+    if args.operator_export is not None:
+        records = for_stop(read_export(args.operator_export), args.stop)
+        for i, row in enumerate(rows, start=2):
+            result = agree(row, records)
+            agreements.append(result)
+            if result.occupancy:
+                rows[i - 2] = row.model_copy(
+                    update={"occupancy": Occupancy(result.occupancy)})
+            marks = {FIELD_COLUMN[f] for f in result.mismatched if f in FIELD_COLUMN}
+            if "time" in result.mismatched:
+                marks |= {"C", "D"}
+            if result.missing:
+                marks |= UNCONFIRMED
+            elif not result.occupancy:
+                marks.add("I")
+            if marks:
+                highlight[i] = marks
+    else:
+        agreements = [None] * len(rows)
+
     table = Table(title="Лента визитов в порядке общей шкалы")
     for column in ("№", "камера", "своё время", "общая шкала", "маршрут", "номер",
-                    "размер", "вышло", "зашло", "код"):
+                    "размер", "запол", "вышло", "зашло", "код", "оператор"):
         table.add_column(column, no_wrap=True)
-    for i, (item, row) in enumerate(zip(placed, rows), start=1):
+    for i, (item, row, deal) in enumerate(zip(placed, rows, agreements), start=1):
+        if deal is None:
+            verdict = "—"
+        elif deal.missing:
+            verdict = "[yellow]записи нет[/yellow]"
+        elif deal.mismatched:
+            verdict = "[yellow]" + ", ".join(sorted(deal.mismatched)) + "[/yellow]"
+        else:
+            verdict = "сошлось"
         table.add_row(
             str(i), item.visit.facts.camera,
             item.visit.facts.stop_ts.strftime("%H:%M:%S"),
             item.reference_ts.strftime("%H:%M:%S") if item.reference_ts else "—",
             row.route or "", row.number or "", row.size.value if row.size else "",
+            row.occupancy.value if row.occupancy else "",
             "N/A" if row.alighted is None else str(row.alighted),
             "N/A" if row.boarded is None else str(row.boarded),
-            str(row.comment or ""),
+            str(row.comment or ""), verdict,
         )
     console.print(table)
 
@@ -144,7 +193,11 @@ def main() -> int:
 
     args.out.mkdir(parents=True, exist_ok=True)
     name = book_filename(rows, group=args.group, stop=args.stop)
-    written = write_rows(args.out / name, rows)
+    if args.template is not None:
+        written = fill_template(args.template, rows, args.out / name,
+                                 highlight=highlight)
+    else:
+        written = write_rows(args.out / name, rows)
     console.print(f"книга: {written}")
     if problems:
         console.print(f"[yellow]правил нарушено: {len(problems)} — "
