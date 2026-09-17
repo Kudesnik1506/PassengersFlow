@@ -206,3 +206,29 @@ def test_another_day_does_not_leak_into_the_book():
         route="26", size="Большой", board="9999", occupancy="А", row=9,
     )
     assert backbone([record("07:02:07", "1111"), other], day) == [record("07:02:07", "1111")]
+
+
+# --- наша правка чужой строки должна быть видна --------------------------------
+#
+# Оператор четыре раза за сутки поменял местами борт и маршрут и один раз склеил
+# их в одно число. Мы это чиним (`operator.repair`) — и до сих пор чинили молча.
+# Молчаливая правка чужих данных недопустима вдвойне: заказчик сверяет книгу с
+# выгрузкой оператора, видит расхождение и не понимает, чьё оно.
+
+def test_a_repaired_field_is_named_so_the_book_can_show_it():
+    """Починенная графа названа поимённо — иначе её нечем пометить."""
+    broken = record("07:00:00", "50", "1536")   # борт и маршрут местами
+    entry = merged([], [broken], timedelta(0))[0]
+    assert entry.row.board_number == "1536" and entry.row.route == "50"
+    assert entry.repaired == frozenset({"board", "route"})
+
+
+def test_an_untouched_row_reports_no_repair():
+    """Ничего не чинили — помечать нечего."""
+    assert merged([], [record("07:00:00", "1111")], timedelta(0))[0].repaired == frozenset()
+
+
+def test_the_reason_for_the_repair_travels_with_the_row():
+    """Спор о строке разбирается по объяснению, а не по памяти сборщика."""
+    entry = merged([], [record("07:00:00", "50", "1536")], timedelta(0))[0]
+    assert "поменяны местами" in " ".join(entry.row.overrides.values())

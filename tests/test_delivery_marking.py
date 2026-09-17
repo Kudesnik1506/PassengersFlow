@@ -72,3 +72,20 @@ def test_a_missing_occupancy_is_not_a_disagreement():
     """Наполненность мы не считаем вовсе (решение 032) — спорить в ней нечем."""
     result = agree(row(), [record(occupancy=None)], SHIFT)
     assert "I" not in marks_for(result)
+
+
+# ---- Наша правка чужой строки ------------------------------------------------
+#
+# Строка оператора, которую мы не расшифровывали, не красится: она целиком его.
+# Но если мы в ней что-то ИСПРАВИЛИ — эта клетка уже наша, и она обязана быть
+# видна. Иначе заказчик, сверяя книгу с выгрузкой, найдёт расхождение и не
+# поймёт, чьё оно: наша это правка или его собственная опечатка.
+
+def test_a_field_we_repaired_is_marked():
+    from paxcount.delivery.marking import marks_for_repair
+    assert marks_for_repair(frozenset({"board", "route"})) == {"G", "H"}
+
+
+def test_nothing_repaired_marks_nothing():
+    from paxcount.delivery.marking import marks_for_repair
+    assert marks_for_repair(frozenset()) == set()

@@ -53,12 +53,19 @@ class Decoded:
 
 @dataclass(frozen=True)
 class Entry:
-    """Одна машина ленты. `decoded` — расшифровывали ли её мы."""
+    """Одна машина ленты. `decoded` — расшифровывали ли её мы.
+
+    `repaired` — графы, которые мы починили за оператором. Молчаливая правка
+    чужих данных недопустима: заказчик сверяет книгу с выгрузкой, видит
+    расхождение и не понимает, чьё оно. Поэтому починка называется поимённо и
+    доходит до книги пометкой.
+    """
 
     moment: datetime
     row: DeliveryRow
     decoded: bool
     record: OperatorRecord | None = None
+    repaired: frozenset[str] = frozenset()
 
 
 def clock_shift(decoded: list[Decoded]) -> timedelta | None:
@@ -90,16 +97,22 @@ def _enum(kind: type, text: str | None):
 def _row_from_record(
     record: OperatorRecord, shift: timedelta, *, group: str, stop: str,
     operator: str,
-) -> DeliveryRow:
+) -> tuple[DeliveryRow, frozenset[str]]:
     """Строка по одной записи оператора: всё, что он знает, и пустой счёт.
+
+    Вторым значением — графы, починенные за оператором: их книга красит.
 
     Госномера у него нет — в выгрузке только бортовой, и в графу номера идёт
     он (решение 071). Поле `state_number` при этом остаётся пустым, и правило
     приёмки на него пожалуется: строка не расшифрована, и это видно.
     """
-    fixed, _ = repair(record)
+    fixed, why = repair(record)
+    mended = frozenset(
+        name for name in ("board", "route")
+        if getattr(fixed, name) != getattr(record, name)
+    )
     moment = fixed.created + shift
-    return DeliveryRow(
+    row = DeliveryRow(
         group=group,
         date=moment.strftime("%d.%m.%Y"),
         hours=moment.hour,
@@ -114,7 +127,9 @@ def _row_from_record(
         boarded=None,
         alighted=None,
         operator=operator,
+        overrides={"операторская строка": why} if why else {},
     )
+    return row, mended
 
 
 def merge(
@@ -143,16 +158,13 @@ def merge(
         Entry(moment=d.moment, row=d.row, decoded=True, record=d.agreement.record)
         for d in decoded
     ]
-    entries += [
-        Entry(
-            moment=r.created + shift,
-            row=_row_from_record(r, shift, group=group, stop=stop, operator=operator),
-            decoded=False,
-            record=r,
-        )
-        for r in records
-        if id(r) not in taken
-    ]
+    for r in records:
+        if id(r) in taken:
+            continue
+        row, mended = _row_from_record(r, shift, group=group, stop=stop,
+                                        operator=operator)
+        entries.append(Entry(moment=r.created + shift, row=row, decoded=False,
+                              record=r, repaired=mended))
     return sorted(entries, key=lambda e: e.moment)
 
 

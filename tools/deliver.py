@@ -44,7 +44,7 @@ from paxcount.delivery.model import VehicleKind  # noqa: E402
 from paxcount.delivery.reconcile import VisitFacts  # noqa: E402
 from paxcount.delivery.agreement import Agreement, agree  # noqa: E402
 from paxcount.delivery.fill import fill_template  # noqa: E402
-from paxcount.delivery.marking import marks_for  # noqa: E402
+from paxcount.delivery.marking import marks_for, marks_for_repair  # noqa: E402
 from paxcount.delivery.model import Occupancy  # noqa: E402
 from paxcount.delivery.operator import (  # noqa: E402
     drop_duplicates, for_stop, read_export,
@@ -225,10 +225,13 @@ def main() -> int:
     # целиком его, спорить в ней не с чем. Красятся только наши (решение 070).
     highlight: dict[int, set[str]] = {}
     for i, entry in enumerate(entries, start=2):
-        deal = deals.get(id(entry.row)) if entry.decoded else None
-        if deal is None or args.operator_export is None:
+        if not entry.decoded:
+            # Его строка, но графа, которую мы за него починили, уже наша.
+            marks = marks_for_repair(entry.repaired)
+        elif args.operator_export is None:
             continue
-        marks = marks_for(deal)
+        else:
+            marks = marks_for(deals[id(entry.row)])
         if marks:
             highlight[i] = marks
 

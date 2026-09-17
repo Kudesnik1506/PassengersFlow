@@ -33,3 +33,14 @@ def marks_for(agreement: Agreement) -> set[str]:
     if "time" in agreement.mismatched:
         marks |= TIME_COLUMNS
     return marks
+
+
+def marks_for_repair(fields: frozenset[str]) -> set[str]:
+    """Графы, починенные нами за оператором, — их книга тоже красит.
+
+    Строка оператора, которую мы не расшифровывали, жёлтой не бывает: она
+    целиком его. Но клетка, которую мы в ней исправили, уже наша, и молчать о
+    ней нельзя — заказчик сверяет книгу с выгрузкой и обязан понимать, чья
+    правка перед ним.
+    """
+    return {FIELD_COLUMN[f] for f in fields if f in FIELD_COLUMN}
