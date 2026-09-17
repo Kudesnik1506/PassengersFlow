@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date as Date
 from datetime import datetime, timedelta
 from statistics import median
 
@@ -92,9 +93,9 @@ def _row_from_record(
 ) -> DeliveryRow:
     """Строка по одной записи оператора: всё, что он знает, и пустой счёт.
 
-    Госномера у него нет — в выгрузке только бортовой, и подставлять бортовой
-    в графу госномера нельзя (решение 026). Графа остаётся пустой, а правило
-    приёмки на неё пожалуется: строка не расшифрована, и это видно.
+    Госномера у него нет — в выгрузке только бортовой, и в графу номера идёт
+    он (решение 071). Поле `state_number` при этом остаётся пустым, и правило
+    приёмки на него пожалуется: строка не расшифрована, и это видно.
     """
     fixed, _ = repair(record)
     moment = fixed.created + shift
@@ -155,18 +156,15 @@ def merge(
     return sorted(entries, key=lambda e: e.moment)
 
 
-def shift_around(shifts: list[list[OperatorRecord]],
-                  moment: datetime) -> list[OperatorRecord]:
-    """Смена оператора, накрывающая этот момент; иначе — ближайшая к нему.
+def backbone(records: list[OperatorRecord], day: Date) -> list[OperatorRecord]:
+    """Записи, из которых строится книга: ВЕСЬ день, а не одна смена.
 
-    Книга собирается на одну смену, а не на сутки: между сменами часы стоят,
-    и лента, склеенная через трёхчасовой перерыв, перестаёт быть
-    последовательностью прибытий.
+    Съёмка идёт тремя окнами с перерывами в часы, и поначалу книга собиралась
+    на то окно, где лежат наши расшифровки. Принятый заказчиком файл это
+    опроверг: 312 строк за одну дату, часы с 07 до 20 — все три окна в одном
+    файле. Инструкция говорит то же словами: «расшифровываем весь материал».
+
+    Дата отсекается явно: выгрузка приходит за несколько дней разом, а файл
+    заказчика называется датой и на неё же принимается.
     """
-    if not shifts:
-        return []
-    inside = [s for s in shifts if s[0].created <= moment <= s[-1].created]
-    if inside:
-        return inside[0]
-    return min(shifts, key=lambda s: min(abs(s[0].created - moment),
-                                          abs(s[-1].created - moment)))
+    return [r for r in records if r.created.date() == day]

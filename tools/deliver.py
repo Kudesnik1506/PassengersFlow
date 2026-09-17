@@ -47,12 +47,12 @@ from paxcount.delivery.fill import fill_template  # noqa: E402
 from paxcount.delivery.marking import marks_for  # noqa: E402
 from paxcount.delivery.model import Occupancy  # noqa: E402
 from paxcount.delivery.operator import (  # noqa: E402
-    drop_duplicates, for_stop, read_export, shifts,
+    drop_duplicates, for_stop, read_export,
 )
 from paxcount.delivery.sequence import (  # noqa: E402
-    Decoded, Entry, clock_shift, merge, shift_around,
+    Decoded, Entry, backbone, clock_shift, merge,
 )
-from paxcount.delivery.timeline import parse_slot  # noqa: E402
+from paxcount.delivery.timeline import file_at, parse_slot  # noqa: E402
 from paxcount.delivery.validate import validate  # noqa: E402
 from paxcount.delivery.xlsx import write_rows  # noqa: E402
 from paxcount.settings import DATA_DIR, OUT_DIR  # noqa: E402
@@ -117,39 +117,34 @@ def collect(doors: Path, stop: str) -> list[Visit]:
     return visits
 
 
-# Длиннее 31 минуты регистратор не пишет — замер по 125 боевым файлам трёх
-# камер (`delivery.timeline`). Момент, отстоящий от начала файла дальше, лежит
-# уже не в нём, а в разрыве записи: назвать файл такой строке нечем.
-MAX_SLOT_S = 31 * 60
-
-
 def reference_slots(stop: str, camera: str = "2") -> list:
-    """Куски записи опорной камеры, по времени.
+    """Куски записи опорной камеры с ИЗМЕРЕННОЙ длительностью, по времени.
 
     Нужны, чтобы у строки, которую ещё предстоит расшифровать, стояло имя
-    файла: расшифровщик должен видеть, где эту машину искать, а правило
-    приёмки требует графу N заполненной.
+    файла: расшифровщик должен видеть, где машину искать. Длительность
+    измеряется, а не берётся по расстоянию до соседа, — между файлами боевой
+    К2 есть дыры, и момент в дыре не снят вовсе (`timeline.file_at`).
     """
     from paxcount.settings import videos_in
 
-    slots = []
+    found = []
     for path in videos_in(None):
         try:
             slot = parse_slot(path.stem)
         except ValueError:
             continue
         if slot.stop == stop and slot.camera == camera:
-            slots.append(slot)
-    return sorted(slots)
+            found.append((slot, path))
+    found.sort(key=lambda pair: pair[0].start)
 
-
-def video_at(moment, slots) -> str:
-    """Файл, внутри которого лежит момент. Пусто — записи на эту минуту нет."""
-    covering = [s for s in slots if s.start <= moment]
-    if not covering:
-        return ""
-    slot = covering[-1]
-    return slot.name if (moment - slot.start).total_seconds() <= MAX_SLOT_S else ""
+    slots = []
+    for n, (slot, path) in enumerate(found):
+        meta = probe(path)
+        seconds = meta.frame_count / (meta.fps or 30.0)
+        to_next = (found[n + 1][0].start - slot.start).total_seconds() \
+            if n + 1 < len(found) else seconds
+        slots.append(replace(slot, duration_s=to_next, real_duration_s=seconds))
+    return slots
 
 
 def main() -> int:
@@ -202,23 +197,25 @@ def main() -> int:
             console.print("[red]ни одна машина не нашлась у оператора по борту: "
                            "поправку часов измерить нечем, лента не собирается[/red]")
             return 1
-        anchor = next(d.agreement.record for d in decoded if d.agreement.record)
-        backbone = shift_around(shifts(records), anchor.created)
+        # Костяк — весь день, а не окно съёмки: файл заказчика принимается на
+        # дату, и в принятом лежат все три окна разом (решение 072).
+        day = decoded[0].moment.date()
+        spine = backbone(records, day)
         # Сверка времени пересчитывается с уже измеренной поправкой: общее для
         # смены расхождение часов книга снимает целиком, и помечать им строку
         # значит утверждать расхождение, которого в ней больше нет.
         decoded = [replace(d, agreement=agree(d.row, records, shift)) for d in decoded]
-        entries = merge(decoded, backbone, shift=shift, group=args.group,
+        entries = merge(decoded, spine, shift=shift, group=args.group,
                          stop=args.stop, operator=args.operator)
         console.print(f"часы камеры впереди часов оператора на {shift}; "
-                       f"смена оператора: {len(backbone)} машин, "
+                       f"за {day:%d.%m.%Y} у оператора {len(spine)} машин, "
                        f"расшифровано нами {len(decoded)}")
 
     # Строке, которую ещё предстоит расшифровать, называем файл записи.
     slots = reference_slots(args.stop)
     entries = [
         e if e.decoded else replace(
-            e, row=e.row.model_copy(update={"video": video_at(e.moment, slots)}))
+            e, row=e.row.model_copy(update={"video": file_at(e.moment, slots)}))
         for e in entries
     ]
     rows = [e.row for e in entries]

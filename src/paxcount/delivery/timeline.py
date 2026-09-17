@@ -319,3 +319,23 @@ def sessions_from_names(
         sessions.append(Session(slots=tuple(measured)))
     return sessions
 
+
+
+def file_at(moment: datetime, slots: list[FileSlot]) -> str:
+    """Имя файла, внутри которого лежит момент. Пусто — записи на него нет.
+
+    Графа N бланка называется «Название видеофайла. Скопировать сюда»: по ней
+    проверяющий открывает запись. Имя файла, момента в котором нет, хуже
+    пустой графы — оно отправляет смотреть не туда и выглядит заполненным.
+
+    Поэтому границу задаёт ИЗМЕРЕННАЯ длительность записи, а не расстояние до
+    соседнего файла: у боевой К2 между файлами есть дыры (главная — 1074 с), и
+    момент, попавший в дыру, не снят вовсе. Длительность не измерена — файл
+    считается идущим до соседа, как и везде в этом модуле.
+    """
+    started = [s for s in sorted(slots) if s.start <= moment]
+    if not started:
+        return ""
+    slot = started[-1]
+    length = slot.real_duration_s if slot.real_duration_s is not None else slot.duration_s
+    return slot.name if (moment - slot.start).total_seconds() <= length else ""

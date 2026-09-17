@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 
 import pytest
@@ -21,6 +22,7 @@ from paxcount.delivery.timeline import (
     FileSlot,
     NoFootageError,
     Session,
+    file_at,
     parse_slot,
     sessions_from_names,
 )
@@ -304,3 +306,36 @@ def test_at_edge_covers_gap_boundaries_too():
 def test_no_footage_error_is_a_value_error():
     """Старый код, ловящий ValueError от locate(), продолжает его ловить."""
     assert issubclass(NoFootageError, ValueError)
+
+
+# ---- Какой файл открывать на этот момент -------------------------------------
+#
+# Графа N бланка называется «Название видеофайла. Скопировать сюда»: по ней
+# проверяющий открывает запись и смотрит машину. Имя файла, внутри которого
+# момента нет, хуже пустой графы — оно отправляет смотреть не туда и выглядит
+# при этом заполненным.
+#
+# Поэтому решает измеренная длительность записи, а не расстояние до соседа: у
+# боевой К2 между файлами есть дыры (главная — 1074 с), и момент, попавший в
+# дыру, не лежит ни в одном файле.
+
+def test_the_file_of_a_moment_is_the_one_that_contains_it():
+    slots = [parse_slot("2026-09-10 - 07-00-00 - 22739_2 - 01"),
+              parse_slot("2026-09-10 - 07-10-00 - 22739_2 - 02")]
+    assert file_at(datetime(2026, 9, 10, 7, 5), slots) == \
+        "2026-09-10 - 07-00-00 - 22739_2 - 01"
+    assert file_at(datetime(2026, 9, 10, 7, 12), slots) == \
+        "2026-09-10 - 07-10-00 - 22739_2 - 02"
+
+
+def test_a_moment_inside_a_recording_gap_has_no_file():
+    """Файл кончился раньше соседа — момент между ними не снят вовсе."""
+    short = replace(parse_slot("2026-09-10 - 07-00-00 - 22739_2 - 01"),
+                     real_duration_s=120.0)
+    slots = [short, parse_slot("2026-09-10 - 07-10-00 - 22739_2 - 02")]
+    assert file_at(datetime(2026, 9, 10, 7, 5), slots) == "", "две минуты записи, дыра дальше"
+
+
+def test_a_moment_before_the_first_file_has_no_file():
+    slots = [parse_slot("2026-09-10 - 07-00-00 - 22739_2 - 01")]
+    assert file_at(datetime(2026, 9, 10, 6, 50), slots) == ""

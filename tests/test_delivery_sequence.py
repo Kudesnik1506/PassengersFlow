@@ -25,7 +25,7 @@ import pytest
 from paxcount.delivery.agreement import Agreement
 from paxcount.delivery.model import DeliveryRow, VehicleKind, VehicleSize
 from paxcount.delivery.operator import OperatorRecord
-from paxcount.delivery.sequence import Decoded, clock_shift, merge
+from paxcount.delivery.sequence import Decoded, backbone, clock_shift, merge
 
 STOP = "22739"
 
@@ -181,3 +181,28 @@ def test_the_operator_row_is_marked_as_not_ours():
                     [match, record("07:02:07", "38129")],
                     timedelta(minutes=7, seconds=18))
     assert [e.decoded for e in order] == [True, False]
+
+
+# --- костяк книги: сутки, а не смена -----------------------------------------
+#
+# Съёмка идёт тремя окнами с перерывами в часы, и поначалу книга собиралась на
+# одно окно — то, где лежат наши расшифровки. Принятый заказчиком файл это
+# опроверг: 312 строк за ОДНУ дату, часы с 07 до 20, все три окна в одном файле.
+# Инструкция говорит то же словами: «расшифровываем весь материал».
+
+def test_the_book_is_built_for_the_whole_day_not_one_shift():
+    """Три окна съёмки — один файл. Взять одно значит выдать треть смены."""
+    day = datetime(2026, 9, 10).date()
+    records = [record("07:02:07", "1111"), record("12:20:18", "2222"),
+                record("17:11:40", "3333")]
+    assert len(backbone(records, day)) == 3
+
+
+def test_another_day_does_not_leak_into_the_book():
+    """Файл заказчика — на дату. Соседние сутки в него попадать не должны."""
+    day = datetime(2026, 9, 10).date()
+    other = OperatorRecord(
+        created=datetime(2026, 9, 11, 7, 2, 7), stop=STOP, kind="Автобус",
+        route="26", size="Большой", board="9999", occupancy="А", row=9,
+    )
+    assert backbone([record("07:02:07", "1111"), other], day) == [record("07:02:07", "1111")]
