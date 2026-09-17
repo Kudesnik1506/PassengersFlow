@@ -1,7 +1,7 @@
 {
   "2026-08-10 - 07-00-46 - 22739_3 - 02.MP4": {
     "boarded": 10,
-    "alighted": 5
+    "alighted": 6
   },
   "01_liaz6213_tyumen_doors_open.webm": {
     "boarded": 0,
@@ -44,8 +44,8 @@
     "alighted": 1
   },
   "11_croydon_bus_stop.webm": {
-    "boarded": 0,
-    "alighted": 1
+    "boarded": 1,
+    "alighted": 2
   },
   "12_sandy_trax_platform.webm": {
     "boarded": 0,
@@ -53,7 +53,7 @@
   },
   "13_salzburg_trolleybus_articulated.webm": {
     "boarded": 0,
-    "alighted": 0
+    "alighted": 1
   },
   "14_brno_tram_stop.ogv": {
     "boarded": 2,
