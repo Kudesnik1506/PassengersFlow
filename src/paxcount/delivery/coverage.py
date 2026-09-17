@@ -17,6 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from ..cameras import counts as camera_counts
 from .model import DeliveryRow
 from .reconcile import notes_for_visit
 from .timeline import CameraTrack, Session, footage_at, gaps_between
@@ -96,8 +97,22 @@ def with_footage(row: DeliveryRow, moment: datetime,
     if found is None:
         return row.model_copy(update={"video": "", "camera": "",
                                        "camera_ts": None, "notes": notes})
+    if not camera_counts(found.camera):
+        notes = (*notes, no_doors_note(found.camera))
     return row.model_copy(update={"video": found.file, "camera": found.camera,
                                    "camera_ts": found.camera_ts, "notes": notes})
+
+
+def no_doors_note(camera: str) -> str:
+    """Запись есть, а стоянки в ней нет — это надо сказать словами.
+
+    Кода таблицы 2 для такого случая не существует: она перечисляет, какие
+    двери не попали в кадр, а «не попала стоянка целиком» в ней не описано.
+    Подбирать ближайший похожий код нельзя — по той же причине, по которой от
+    этого отказывается `reconcile.comment_code`.
+    """
+    return (f"камера {camera} стоянку не снимает: она ниже по ходу, "
+             "в кадре проезд, дверей не видно")
 
 
 def gaps_of_cameras(cameras: list[CameraTrack],

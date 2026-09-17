@@ -177,3 +177,37 @@ def test_a_technical_joint_is_not_a_gap_worth_naming():
     tracks = [CameraTrack(camera="2", offset_to_k2_s=0.0,
                            slots=[short, parse_slot("2026-09-10 - 07-10-00 - 22739_2 - 02")])]
     assert gaps_of_cameras(tracks) == [], "стык в 4 с — шум, а не разрыв"
+
+
+# ---- Камера, которая стоянку не видит ------------------------------------------
+#
+# К1 стоит в ста метрах вниз по ходу: борт опознаёт, порядок проездов задаёт, а
+# стоянку от проезда не отличает (решение 030). Назвать её файл и промолчать —
+# значит отправить проверяющего искать посадку там, где её в кадре нет.
+#
+# Кода таблицы 2 тут не будет: она описывает, какие двери НЕ попали в кадр, а
+# случая «не попала стоянка целиком» в ней нет. Придумывать код нельзя — по той
+# же причине, по которой `reconcile.comment_code` отказывается его подбирать.
+
+
+def test_a_camera_that_cannot_see_the_stop_says_so_in_the_comment():
+    from dataclasses import replace as _replace
+
+    k2 = _replace(parse_slot("2026-09-10 - 07-30-00 - 22739_2 - 01"), real_duration_s=120.0)
+    tracks = [
+        CameraTrack(camera="2", offset_to_k2_s=0.0,
+                     slots=[k2, parse_slot("2026-09-10 - 07-50-00 - 22739_2 - 02")]),
+        CameraTrack(camera="1", offset_to_k2_s=-358.0,
+                     slots=[parse_slot("2026-09-10 - 07-24-02 - 22739_1 - 01")]),
+    ]
+    out = with_footage(_row(), _dt(2026, 9, 10, 7, 35), tracks, [])
+    assert out.camera == "1", "запись нашлась только у неё"
+    joined = "; ".join(out.notes)
+    assert "камер" in joined and "стоянк" in joined, joined
+    assert out.comment is None, "кода таблицы 2 для этого случая нет"
+
+
+def test_a_counting_camera_needs_no_such_warning():
+    tracks = [CameraTrack(camera="2", offset_to_k2_s=0.0,
+                           slots=[parse_slot("2026-09-10 - 07-30-00 - 22739_2 - 01")])]
+    assert with_footage(_row(), _dt(2026, 9, 10, 7, 35), tracks, []).notes == ()
