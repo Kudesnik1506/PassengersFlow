@@ -44,6 +44,7 @@ from paxcount.delivery.model import VehicleKind  # noqa: E402
 from paxcount.delivery.reconcile import VisitFacts  # noqa: E402
 from paxcount.delivery.agreement import Agreement, agree  # noqa: E402
 from paxcount.delivery.fill import fill_template  # noqa: E402
+from paxcount.delivery.marking import marks_for  # noqa: E402
 from paxcount.delivery.model import Occupancy  # noqa: E402
 from paxcount.delivery.operator import (  # noqa: E402
     drop_duplicates, for_stop, read_export, shifts,
@@ -60,13 +61,6 @@ from paxcount import truth_rows  # noqa: E402
 
 console = Console(width=170)
 
-# Поле сверки → графа бланка. Время занимает две графы, поэтому его здесь нет:
-# оно разворачивается в C и D там, где строится пометка.
-FIELD_COLUMN = {"kind": "F", "route": "H", "size": "J", "board": "G"}
-# Помечается только РАСХОЖДЕНИЕ: клетка, где наше значение и значение
-# оператора не сошлись (решение 070). Молчание оператора пометки не даёт —
-# отсутствие записи это не спор о числе, а её отсутствие; то же и со строкой,
-# которую мы ещё не расшифровали: она вся от оператора, спорить в ней не с чем.
 
 
 def _kind(text: str | None) -> VehicleKind | None:
@@ -230,14 +224,14 @@ def main() -> int:
     rows = [e.row for e in entries]
     deals = {id(d.row): d.agreement for d in decoded}
 
+    # Строка оператора, которую мы не расшифровывали, не красится вовсе: она
+    # целиком его, спорить в ней не с чем. Красятся только наши (решение 070).
     highlight: dict[int, set[str]] = {}
     for i, entry in enumerate(entries, start=2):
         deal = deals.get(id(entry.row)) if entry.decoded else None
-        if deal is None or deal.record is None:
+        if deal is None or args.operator_export is None:
             continue
-        marks = {FIELD_COLUMN[f] for f in deal.mismatched if f in FIELD_COLUMN}
-        if "time" in deal.mismatched:
-            marks |= {"C", "D"}
+        marks = marks_for(deal)
         if marks:
             highlight[i] = marks
 
