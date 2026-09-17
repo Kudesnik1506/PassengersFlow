@@ -1,0 +1,1011 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>paxcount — разметка дверей</title>
+<style>
+  :root { --bg:#14161a; --panel:#1c1f26; --line:#2c313b; --ink:#e6e9ef;
+          --dim:#9aa3b2; --accent:#4aa3ff; --warn:#ffb454; --bad:#ff6b6b;
+          --good:#4ade80; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:13px/1.45
+         -apple-system, "SF Pro Text", system-ui, sans-serif; height:100vh;
+         --left:250px; --right:310px;
+         display:grid; grid-template-columns: var(--left) 1fr var(--right); }
+  /* Свёрнутая панель не исчезает совсем — остаётся полоска с кнопкой. Панель,
+     которую нечем вернуть, это не сворачивание, а потеря. */
+  body.left-off { --left:30px; }
+  body.right-off { --right:30px; }
+  /* `min-height:0` и `overflow:hidden` здесь не украшение. Пока прокрутка
+     висела на самой панели, её минимальная высота считалась нулевой и строка
+     сетки держалась в высоту окна. Панель-флексбокс без них требует высоту
+     всего списка записей — страница вырастает до трёх тысяч пикселей, полотно
+     и нижняя панель уезжают за край окна. */
+  aside, section.right { background:var(--panel); padding:10px; min-width:0;
+         min-height:0; overflow:hidden;
+         border-right:1px solid var(--line);
+         display:flex; flex-direction:column; }
+  section.right { border-right:none; border-left:1px solid var(--line); }
+  /* Прокрутка переехала на содержимое: кнопка сворачивания обязана оставаться
+     на виду, а в прокручиваемом контейнере она уезжает вместе со списком. */
+  .pbody { flex:1; min-height:0; overflow-y:auto; }
+  .collapse { align-self:flex-end; margin-bottom:6px; padding:1px 7px;
+              line-height:1.2; color:var(--dim); flex:none; }
+  section.right .collapse { align-self:flex-start; }
+  body.left-off aside, body.right-off section.right { padding:10px 3px; }
+  body.left-off aside .pbody, body.right-off section.right .pbody { display:none; }
+  body.left-off aside .collapse,
+  body.right-off section.right .collapse { align-self:center; }
+  main { display:flex; flex-direction:column; min-width:0; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em;
+       color:var(--dim); margin:14px 0 6px; font-weight:600; }
+  h2:first-child { margin-top:0; }
+  .file { padding:4px 6px; border-radius:5px; cursor:pointer; font-size:12px;
+          white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .file:hover { background:#252a33; }
+  .file.on { background:var(--accent); color:#04121f; }
+  .file .mark { color:var(--good); }
+  .file.on .mark { color:#04121f; }
+  #view { flex:1; position:relative; overflow:hidden; background:#000;
+          cursor:crosshair; }
+  #cv { position:absolute; inset:0; width:100%; height:100%; }
+  .bar { display:flex; gap:6px; align-items:center; padding:8px;
+         border-top:1px solid var(--line); background:var(--panel);
+         flex-wrap:wrap; }
+  button { background:#2a3039; color:var(--ink); border:1px solid var(--line);
+           border-radius:5px; padding:4px 9px; cursor:pointer; font-size:12px; }
+  button:hover { background:#343c47; }
+  button.on { background:var(--accent); color:#04121f; border-color:var(--accent); }
+  button.go { background:var(--good); color:#04180c; border-color:var(--good);
+              font-weight:600; }
+  input, select { background:#11141a; color:var(--ink); border:1px solid var(--line);
+          border-radius:5px; padding:4px 6px; font-size:12px; width:100%; }
+  input[type=range] { padding:0; }
+  label.row { display:block; margin:6px 0 2px; color:var(--dim); font-size:11px; }
+  .door { border:1px solid var(--line); border-radius:6px; padding:6px;
+          margin-bottom:6px; }
+  .door.target { border-color:var(--accent); }
+  .door .hd { display:flex; justify-content:space-between; align-items:center;
+              gap:6px; }
+  .door .px { color:var(--dim); font-size:11px; margin-top:4px;
+              font-family:ui-monospace, Menlo, monospace; }
+  .chk { display:flex; align-items:center; gap:5px; font-size:11px;
+         color:var(--dim); }
+  .chk input { width:auto; }
+  #problems div { background:#3a2a16; border:1px solid var(--warn); color:#ffd8a0;
+                  border-radius:6px; padding:6px 8px; margin-bottom:6px;
+                  font-size:11px; }
+  #problems div.err { background:#3a1a1a; border-color:var(--bad); color:#ffc0c0; }
+  #problems div.ok { background:#16301f; border-color:var(--good); color:#bdf5cf; }
+  .muted { color:var(--dim); font-size:11px; }
+  code { font-family:ui-monospace, Menlo, monospace; font-size:11px;
+         color:var(--accent); word-break:break-all; }
+  .times { font-family:ui-monospace, Menlo, monospace; font-size:11px;
+           color:var(--dim); }
+  .times b { color:var(--ink); font-weight:600; }
+
+  /* Плавающие органы масштаба — поверх кадра, всегда на виду. Кнопка
+     «Вписать» в общей панели терялась среди прочих, и увеличенный кадр
+     некуда было вернуть. */
+  #zoombar { position:absolute; top:10px; right:12px; display:flex; gap:6px;
+             align-items:center; background:rgba(20,22,26,.82); padding:6px;
+             border:1px solid var(--line); border-radius:8px;
+             backdrop-filter:blur(4px); }
+  #zoombar button { padding:4px 10px; }
+  #zoomval { color:var(--dim); font-size:11px; min-width:44px; text-align:center;
+             font-family:ui-monospace, Menlo, monospace; }
+  #helpbtn { position:absolute; top:10px; left:12px; background:rgba(20,22,26,.82);
+             border:1px solid var(--line); border-radius:8px; padding:6px 12px; }
+
+  /* Мастер */
+  #wizard { position:fixed; inset:0; background:rgba(8,9,12,.72); display:none;
+            align-items:center; justify-content:center; z-index:50; }
+  #wizard.on { display:flex; }
+  /* Когда шаг что-то подсвечивает, затемняет уже не фон мастера, а тень
+     вокруг выреза — иначе подсвеченное место было бы притушено дважды. */
+  #wizard.spot { background:transparent; }
+  #spot { position:fixed; display:none; border-radius:10px; pointer-events:none;
+          box-shadow: 0 0 0 9999px rgba(8,9,12,.74),
+                      0 0 0 2px var(--accent),
+                      0 0 24px 6px rgba(74,163,255,.45);
+          transition: top .22s ease, left .22s ease,
+                      width .22s ease, height .22s ease; }
+  #spot.on { display:block; animation: pulse 1.8s ease-in-out infinite; }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 9999px rgba(8,9,12,.74),
+                           0 0 0 2px var(--accent),
+                           0 0 22px 4px rgba(74,163,255,.35); }
+    50%      { box-shadow: 0 0 0 9999px rgba(8,9,12,.74),
+                           0 0 0 3px var(--accent),
+                           0 0 30px 10px rgba(74,163,255,.65); }
+  }
+  #wizcard { width:min(680px, 92vw); background:var(--panel); color:var(--ink);
+             border:1px solid var(--line); border-radius:12px; padding:22px 24px;
+             box-shadow:0 20px 60px rgba(0,0,0,.6); z-index:51; }
+  #wizcard.near { width:min(520px, 92vw); padding:18px 20px; }
+  #wizcard h3 { margin:0 0 4px; font-size:17px; }
+  #wizstep { color:var(--accent); font-size:11px; text-transform:uppercase;
+             letter-spacing:.1em; font-weight:600; }
+  #wizbody { margin:12px 0 18px; line-height:1.6; }
+  #wizbody ul { margin:8px 0 0 18px; padding:0; }
+  #wizbody li { margin:4px 0; }
+  #wizbody .k { display:inline-block; border:1px solid var(--line);
+                border-radius:4px; padding:0 5px; background:#11141a;
+                font-family:ui-monospace, Menlo, monospace; font-size:11px; }
+  #wiznav { display:flex; gap:8px; align-items:center; }
+  #wizdots { flex:1; display:flex; gap:5px; }
+  #wizdots i { width:7px; height:7px; border-radius:50%; background:var(--line);
+               display:block; }
+  #wizdots i.on { background:var(--accent); }
+</style>
+</head>
+<body>
+
+<aside>
+  <button class="collapse" id="lefttoggle" title="Свернуть панель (клавиша «[»)">‹</button>
+  <div class="pbody">
+    <h2>Размечено</h2>
+    <div id="saved"><div class="muted">пока ничего</div></div>
+
+    <h2>Записи</h2>
+    <input id="filter" placeholder="фильтр по имени">
+    <div id="files" style="margin-top:6px"></div>
+    <div id="excluded" class="muted" style="margin-top:10px"></div>
+  </div>
+</aside>
+
+<main>
+  <div id="view">
+    <canvas id="cv"></canvas>
+    <button id="helpbtn">? Как размечать</button>
+    <div id="zoombar">
+      <button id="zoomout" title="Отдалить">−</button>
+      <span id="zoomval">—</span>
+      <button id="zoomin" title="Приблизить">+</button>
+      <button id="center" title="Вернуть кадр целиком (клавиша 0)">Вписать</button>
+    </div>
+  </div>
+  <div class="bar">
+    <button data-step="-300">−10 c</button>
+    <button data-step="-30">−1 c</button>
+    <button data-step="-8">−0,25 c</button>
+    <button data-step="-1">−1 кадр</button>
+    <button data-step="1">+1 кадр</button>
+    <button data-step="8">+0,25 c</button>
+    <button data-step="30">+1 c</button>
+    <button data-step="300">+10 c</button>
+    <span style="flex:1"></span>
+    <span class="times" id="clock">—</span>
+  </div>
+  <div class="bar">
+    <input id="slider" type="range" min="0" max="0" value="0" style="flex:1">
+    <input id="gotoframe" style="width:90px" placeholder="кадр">
+    <input id="gototime" style="width:110px" placeholder="чч:мм:сс камеры">
+    <button id="go">Перейти</button>
+    <span class="muted">колесо — масштаб, Shift+тяга — сдвиг,
+      <b>0</b> — вписать кадр целиком</span>
+    <span class="muted" style="margin-left:auto" title="Версия экрана на сервере">
+      экран от {{ВЕРСИЯ}}</span>
+  </div>
+</main>
+
+<section class="right">
+  <button class="collapse" id="righttoggle" title="Свернуть панель (клавиша «]»)">›</button>
+  <div class="pbody">
+    <h2>Визит</h2>
+    <label class="row">Размер ТС (таблица 3)</label>
+    <select id="size">
+      <option value="Малый">Малый — 1 дверь</option>
+      <option value="Средний">Средний — 2 двери</option>
+      <option value="Большой" selected>Большой — 3 двери</option>
+      <option value="Особо большой">Особо большой — 4 двери</option>
+    </select>
+    <label class="row">Нос кузова — из направления движения камеры</label>
+    <select id="orient">
+      <option value="нос-слева">нос слева</option>
+      <option value="нос-справа">нос справа</option>
+    </select>
+    <div id="facing" class="muted" style="margin-top:6px"></div>
+    <label class="row">Борт / госномер</label>
+    <input id="board" placeholder="7861">
+    <div class="muted" style="margin-top:6px">Ключ визита: <code id="vkey">—</code></div>
+
+    <h2>Что рисуем</h2>
+    <div id="targets"></div>
+
+    <h2>Двери</h2>
+    <div id="doors"></div>
+
+    <h2>Проверка</h2>
+    <div id="problems"><div class="ok">Разметка ещё не отправлялась.</div></div>
+    <div style="display:flex; gap:6px; margin-top:8px">
+      <button class="go" id="save" style="flex:1">Сохранить</button>
+      <button id="load" title="Отменить правки и вернуть разметку, записанную на диск">
+        Вернуть сохранённое</button>
+    </div>
+  </div>
+</section>
+
+<div id="wizard">
+  <div id="spot"></div>
+  <div id="wizcard">
+    <div id="wizstep"></div>
+    <h3 id="wiztitle"></h3>
+    <div id="wizbody"></div>
+    <div id="wiznav">
+      <div id="wizdots"></div>
+      <button id="wizprev">Назад</button>
+      <button id="wiznext" class="go">Дальше</button>
+      <button id="wizclose">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const S = {
+  files: [], layouts: [], file: null, frame: 0, img: null,
+  view: {k:1, x:0, y:0}, target: 'body',
+  body: null, doors: [], lastProblems: [],
+};
+
+const $ = id => document.getElementById(id);
+const cv = $('cv'), ctx = cv.getContext('2d');
+
+const DOORS_BY_SIZE = {'Малый':1, 'Средний':2, 'Большой':3, 'Особо большой':4};
+
+// ---- Список файлов ---------------------------------------------------------
+
+async function loadFiles() {
+  const r = await fetch('/api/markup/files').then(r => r.json());
+  S.files = r.files; S.layouts = r.layouts;
+  renderFiles(); renderSaved();
+  // Камера, убранная из списка нарочно, должна быть названа: иначе её
+  // отсутствие читается как сбой.
+  $('excluded').textContent = (r.excluded && r.excluded.length)
+    ? `Камера ${r.excluded.join(', ')} не показана: она опознаёт машины, но не `
+      + `считает — разметка дверей ей не нужна.`
+    : '';
+}
+
+function renderSaved() {
+  const box = $('saved'); box.innerHTML = '';
+  if (!S.layouts.length) { box.innerHTML = '<div class="muted">пока ничего</div>'; return; }
+  S.layouts.forEach(l => {
+    const d = document.createElement('div');
+    d.className = 'file';
+    const time = (l.visit_key.split('/')[1] || '').slice(11, 19);
+    d.innerHTML = `К${l.camera} ${time} <span class="mark">${l.in_frame}/${l.doors}</span>`;
+    d.title = l.visit_key + '\nкадр ' + l.frame_idx + ' · ' + l.size;
+    d.onclick = () => openSaved(l);
+    box.appendChild(d);
+  });
+}
+
+async function openSaved(l) {
+  const f = S.files.find(f => f.stem === l.video);
+  if (!f) { say(['Файл ' + l.video + ' не найден среди боевых записей.'], 'err'); return; }
+  if (!S.file || S.file.stem !== f.stem) await openFile(f);
+  const board = l.visit_key.split('/')[2] || '';
+  $('board').value = board === '—' ? '' : board;
+  await showFrame(l.frame_idx);
+  await load();
+  fitView();
+}
+
+function renderFiles() {
+  const q = $('filter').value.trim().toLowerCase();
+  const box = $('files'); box.innerHTML = '';
+  let camera = null;
+  for (const f of S.files) {
+    if (q && !f.name.toLowerCase().includes(q)) continue;
+    if (f.camera !== camera) {
+      camera = f.camera;
+      const h = document.createElement('h2');
+      h.textContent = 'Камера ' + (camera || '—');
+      box.appendChild(h);
+    }
+    const d = document.createElement('div');
+    d.className = 'file' + (S.file && S.file.stem === f.stem ? ' on' : '');
+    const short = f.stem.replace(/^\d{4}-\d{2}-\d{2}\s*-\s*/, '');
+    const n = S.layouts.filter(l => l.video === f.stem).length;
+    d.innerHTML = short + (n ? ` <span class="mark">${n}</span>` : '');
+    d.title = f.name + '\n' + f.width + '×' + f.height + ', ' +
+              f.fps + ' fps, ' + f.frames + ' кадров';
+    d.onclick = () => openFile(f);
+    box.appendChild(d);
+  }
+}
+
+async function openFile(f) {
+  S.file = f; S.frame = 0; S.body = null;
+  await loadFacing(f);
+  $('slider').max = Math.max(0, f.frames - 1);
+  resetDoors();
+  renderFiles();
+  await showFrame(0);
+  fitView();
+}
+
+// ---- Кадр ------------------------------------------------------------------
+
+function showFrame(n) {
+  if (!S.file) return Promise.resolve();
+  S.frame = Math.max(0, Math.min(S.file.frames - 1, Math.round(n)));
+  $('slider').value = S.frame;
+  return new Promise(res => {
+    const img = new Image();
+    img.onload = () => { S.img = img; draw(); res(); };
+    img.onerror = () => res();
+    img.src = `/api/markup/frame?stem=${encodeURIComponent(S.file.stem)}&frame=${S.frame}`;
+  }).then(updateClock);
+}
+
+async function updateClock() {
+  if (!S.file) return;
+  const r = await fetch(`/api/markup/at?stem=${encodeURIComponent(S.file.stem)}&frame=${S.frame}`)
+                .then(r => r.json());
+  const hms = iso => iso ? iso.slice(11, 19) : '—';
+  $('clock').innerHTML = `кадр <b>${S.frame}</b> · камера <b>${hms(r.raw)}</b>` +
+    (r.reference ? ` · шкала К2 <b>${hms(r.reference)}</b>`
+                 : ` · <span title="поправка для этого файла не замерена">шкала К2 —</span>`);
+  S.rawTime = r.raw;
+  updateKey();
+}
+
+function updateKey() {
+  if (!S.file || !S.rawTime) { $('vkey').textContent = '—'; return; }
+  const board = $('board').value.trim() || '—';
+  S.visitKey = `${S.file.camera}/${S.rawTime}/${board}`;
+  $('vkey').textContent = S.visitKey;
+  offerSaved();
+}
+
+function drawingIsEmpty() {
+  return !S.body && S.doors.every(d => !d.opening_px && d.in_frame);
+}
+
+// Нарисованное живёт только в памяти страницы: перезагрузка или выбор другого
+// файла его стирают. Из-за этого сохранённая разметка выглядела потерянной —
+// она лежала на диске, но экран о ней молчал. Теперь, попав на тот самый
+// кадр, экран либо показывает её сам (если холст пуст), либо говорит, что она
+// есть (если на холсте уже что-то нарисовано) — затирать чужую работу молча
+// нельзя ни в ту, ни в другую сторону.
+function offerSaved() {
+  // `load()` сам перематывает кадр, а перемотка снова доходит сюда: без
+  // задвижки получилась бы петля из сетевых запросов.
+  if (!S.file || S.loading) return;
+  const saved = S.layouts.find(l => l.video === S.file.stem && l.frame_idx === S.frame);
+  if (!saved) return;
+  if (drawingIsEmpty()) {
+    load();
+  } else {
+    say(['На этом кадре уже есть сохранённая разметка '
+         + `(${saved.in_frame} из ${saved.doors} дверей в кадре). `
+         + 'Кнопка «Вернуть сохранённое» покажет её вместо нарисованного.']);
+  }
+}
+
+// ---- Направление движения камеры -------------------------------------------
+
+// Нос кузова у каждой машины не спрашивается: на остановке весь транспорт идёт
+// в одну сторону, и нос следует из направления механически. Спрашивается
+// направление — оно наблюдаемо на любом проезде, тогда как нос у стоящей
+// машины приходится угадывать по деталям кузова.
+async function loadFacing(f) {
+  const box = $('facing');
+  if (!f || !f.stop) { box.textContent = ''; return; }
+  const r = await fetch(`/api/markup/motion?stop=${encodeURIComponent(f.stop)}`
+                        + `&camera=${encodeURIComponent(f.camera)}`).then(r => r.json());
+  if (r.nose) {
+    $('orient').value = r.nose;
+    box.innerHTML = `Камера ${f.camera}: движение <b>${r.motion.replace('-', ' ')}</b>`
+      + ` → ${r.nose.replace('-', ' ')}. `
+      + `<a href="#" id="refacing" style="color:var(--accent)">изменить</a>`;
+    $('refacing').onclick = ev => { ev.preventDefault(); askFacing(f); };
+  } else {
+    askFacing(f);
+  }
+}
+
+function askFacing(f) {
+  const box = $('facing');
+  box.innerHTML = `Направление движения на камере ${f.camera} не задано.
+    Куда едет транспорт в кадре?<br>`;
+  for (const [motion, text] of [['слева-направо', 'слева направо'],
+                                 ['справа-налево', 'справа налево']]) {
+    const b = document.createElement('button');
+    b.textContent = text;
+    b.style.margin = '6px 6px 0 0';
+    b.onclick = () => setFacing(f, motion);
+    box.appendChild(b);
+  }
+  const hint = document.createElement('div');
+  hint.style.marginTop = '4px';
+  hint.textContent = 'Задаётся один раз на камеру: дальше нос выводится сам.';
+  box.appendChild(hint);
+}
+
+async function setFacing(f, motion) {
+  const res = await fetch('/api/markup/motion', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({stop: f.stop, camera: f.camera, motion,
+                          measured_by: 'задано в экране разметки по проезду'}),
+  });
+  if (!res.ok) { say(['направление не сохранилось'], 'err'); return; }
+  await loadFacing(f);
+}
+
+// ---- Рисование -------------------------------------------------------------
+
+function fitScale() {
+  return S.img ? Math.min(cv.width / S.img.width, cv.height / S.img.height) : 1;
+}
+
+function fitView() {
+  if (!S.img) return;
+  const k = fitScale();
+  S.view = {k, x:(cv.width - S.img.width*k)/2, y:(cv.height - S.img.height*k)/2};
+  draw();
+}
+
+// Кадр нельзя увести за пределы окна целиком. Без этого увеличенный кадр
+// уезжал в никуда, и вернуть его было нечем: «Вписать» терялась в общей
+// панели среди восьми кнопок навигации.
+function clampView() {
+  if (!S.img) return;
+  const w = S.img.width * S.view.k, h = S.img.height * S.view.k;
+  const keep = Math.min(120 * devicePixelRatio, w * 0.5, h * 0.5);
+  S.view.x = Math.max(-w + keep, Math.min(cv.width - keep, S.view.x));
+  S.view.y = Math.max(-h + keep, Math.min(cv.height - keep, S.view.y));
+}
+
+function zoomAt(factor, px, py) {
+  if (!S.img) return;
+  const before = {x:(px - S.view.x)/S.view.k, y:(py - S.view.y)/S.view.k};
+  S.view.k = Math.max(0.02, Math.min(40, S.view.k * factor));
+  S.view.x = px - before.x * S.view.k;
+  S.view.y = py - before.y * S.view.k;
+  clampView(); draw();
+}
+
+function resize() {
+  const r = $('view').getBoundingClientRect();
+  cv.width = r.width * devicePixelRatio; cv.height = r.height * devicePixelRatio;
+  draw();
+}
+
+function toImage(ev) {
+  const r = cv.getBoundingClientRect();
+  const px = (ev.clientX - r.left) * devicePixelRatio;
+  const py = (ev.clientY - r.top) * devicePixelRatio;
+  return {x:(px - S.view.x)/S.view.k, y:(py - S.view.y)/S.view.k};
+}
+
+function rect(b, color, label) {
+  const {k, x, y} = S.view;
+  ctx.strokeStyle = color; ctx.lineWidth = 2 * devicePixelRatio;
+  ctx.strokeRect(x + b[0]*k, y + b[1]*k, (b[2]-b[0])*k, (b[3]-b[1])*k);
+  if (label) {
+    ctx.fillStyle = color;
+    ctx.font = `${13*devicePixelRatio}px system-ui`;
+    ctx.fillText(label, x + b[0]*k + 4, y + b[1]*k - 5);
+  }
+}
+
+// Зазоры рамки кузова до боковых границ кадра. Показываются прямо на кадре:
+// разница между «упёрся в край» и «не доводил 29 px» решает, законна ли
+// отметка «дверь за кадром», а на вписанном кадре эти 29 px глазом не видны.
+function margins(b) {
+  if (!S.img) return '';
+  const left = Math.round(b[0]);
+  const right = Math.round(S.img.width - b[2]);
+  const mark = v => v === 0 ? 'край' : v + ' px';
+  return `слева ${mark(left)} · справа ${mark(right)}`;
+}
+
+function draw() {
+  const val = document.getElementById('zoomval');
+  if (val) val.textContent = S.img ? Math.round(S.view.k / fitScale() * 100) + '%' : '—';
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.fillStyle = '#000'; ctx.fillRect(0,0,cv.width,cv.height);
+  if (!S.img) return;
+  const {k,x,y} = S.view;
+  ctx.imageSmoothingEnabled = k < 2;
+  ctx.drawImage(S.img, x, y, S.img.width*k, S.img.height*k);
+  if (S.body) rect(S.body, '#4aa3ff', 'кузов · ' + margins(S.body));
+  S.doors.forEach((d, i) => {
+    if (d.opening_px) rect(d.opening_px, '#4ade80', 'дверь ' + d.n_from_nose);
+  });
+  if (S.drag && S.drag.box) {
+    rect(S.drag.box, '#ffb454',
+         S.target === 'body' ? margins(S.drag.box) : '');
+  }
+}
+
+// ---- Мышь ------------------------------------------------------------------
+
+$('view').addEventListener('mousedown', ev => {
+  // Кнопки масштаба лежат поверх кадра: нажатие на них не должно начинать
+  // рисование прямоугольника под ними.
+  if (ev.target.closest('#zoombar, #helpbtn')) return;
+  if (!S.img) return;
+  const p = toImage(ev);
+  if (ev.shiftKey) { S.pan = {sx:ev.clientX, sy:ev.clientY, vx:S.view.x, vy:S.view.y}; return; }
+  S.drag = {x0:p.x, y0:p.y, box:null};
+});
+window.addEventListener('mousemove', ev => {
+  if (S.pan) {
+    S.view.x = S.pan.vx + (ev.clientX - S.pan.sx)*devicePixelRatio;
+    S.view.y = S.pan.vy + (ev.clientY - S.pan.sy)*devicePixelRatio;
+    clampView(); draw(); return;
+  }
+  if (!S.drag) return;
+  const p = toImage(ev);
+  // Обрезка по кадру: за его границей нет ни кузова, ни двери, а координаты
+  // оттуда уходили в разметку и делали её шире кадра (найдено на первом
+  // размеченном визите: кузов до 2023 px при ширине 1920).
+  const cx = v => Math.max(0, Math.min(S.img.width, v));
+  const cy = v => Math.max(0, Math.min(S.img.height, v));
+  S.drag.box = [cx(Math.min(S.drag.x0,p.x)), cy(Math.min(S.drag.y0,p.y)),
+                cx(Math.max(S.drag.x0,p.x)), cy(Math.max(S.drag.y0,p.y))]
+                .map(v => Math.round(v*10)/10);
+  draw();
+});
+window.addEventListener('mouseup', () => {
+  S.pan = null;
+  if (S.drag && S.drag.box) {
+    const b = S.drag.box;
+    if (b[2]-b[0] > 3 && b[3]-b[1] > 3) commit(b);
+  }
+  S.drag = null; draw();
+});
+$('view').addEventListener('wheel', ev => {
+  if (!S.img) return;
+  ev.preventDefault();
+  const r = cv.getBoundingClientRect();
+  zoomAt(ev.deltaY < 0 ? 1.15 : 1/1.15,
+         (ev.clientX - r.left)*devicePixelRatio, (ev.clientY - r.top)*devicePixelRatio);
+}, {passive:false});
+
+function commit(b) {
+  if (S.target === 'body') {
+    S.body = b;
+    // Кузов обведён — следующий шаг всегда первая неразмеченная дверь.
+    const next = S.doors.find(d => !d.opening_px && d.in_frame);
+    if (next) S.target = next.n_from_nose;
+  }
+  else {
+    const d = S.doors.find(d => d.n_from_nose === S.target);
+    if (d) { d.opening_px = b; d.in_frame = true; }
+    const next = S.doors.find(d => !d.opening_px && d.in_frame !== false);
+    S.target = next ? next.n_from_nose : S.target;
+  }
+  renderTargets(); renderDoors();
+}
+
+// ---- Двери -----------------------------------------------------------------
+
+function resetDoors() {
+  const n = DOORS_BY_SIZE[$('size').value];
+  S.doors = Array.from({length:n}, (_, i) => ({n_from_nose:i+1, opening_px:null, in_frame:true}));
+  S.target = 'body';
+  renderTargets(); renderDoors(); draw();
+}
+
+function renderTargets() {
+  const box = $('targets'); box.innerHTML = '';
+  const add = (key, text) => {
+    const b = document.createElement('button');
+    b.textContent = text; b.className = S.target === key ? 'on' : '';
+    b.style.marginRight = '4px'; b.style.marginBottom = '4px';
+    b.onclick = () => { S.target = key; renderTargets(); };
+    box.appendChild(b);
+  };
+  add('body', 'кузов' + (S.body ? ' ✓' : ''));
+  if (S.body) {
+    const note = document.createElement('div');
+    note.className = 'muted';
+    note.style.marginTop = '4px';
+    note.textContent = 'до краёв кадра: ' + margins(S.body)
+      + '. Обрезанный кузов должен доходить до края — тяните рамку за границу.';
+    box.appendChild(note);
+  }
+  S.doors.forEach(d => add(d.n_from_nose,
+    'дверь ' + d.n_from_nose + (d.opening_px ? ' ✓' : (d.in_frame ? '' : ' ✕'))));
+}
+
+function renderDoors() {
+  const box = $('doors'); box.innerHTML = '';
+  S.doors.forEach(d => {
+    const el = document.createElement('div');
+    el.className = 'door' + (S.target === d.n_from_nose ? ' target' : '');
+    const px = d.opening_px
+      ? d.opening_px.map(v => Math.round(v)).join(', ')
+      : (d.in_frame ? 'не размечена' : 'за кадром');
+    el.innerHTML = `
+      <div class="hd">
+        <b>Дверь ${d.n_from_nose} от носа</b>
+        <label class="chk"><input type="checkbox" ${d.in_frame ? '' : 'checked'}>вне кадра</label>
+      </div>
+      <div class="px">${px}</div>`;
+    el.querySelector('input').onchange = ev => {
+      d.in_frame = !ev.target.checked;
+      if (!d.in_frame) d.opening_px = null;
+      renderTargets(); renderDoors(); draw();
+    };
+    el.onclick = ev => {
+      if (ev.target.tagName === 'INPUT') return;
+      S.target = d.n_from_nose; renderTargets(); renderDoors();
+    };
+    box.appendChild(el);
+  });
+}
+
+// ---- Сохранение ------------------------------------------------------------
+
+function say(items, cls) {
+  const box = $('problems'); box.innerHTML = '';
+  items.forEach(t => {
+    const d = document.createElement('div');
+    d.className = cls || ''; d.textContent = t; box.appendChild(d);
+  });
+}
+
+async function save(force) {
+  if (!S.file || !S.visitKey) { say(['Сначала выберите запись и кадр.'], 'err'); return; }
+  const payload = {
+    visit_key: S.visitKey, camera: S.file.camera, size: $('size').value,
+    orientation: $('orient').value, video: S.file.stem, frame_idx: S.frame,
+    frame_size: [S.file.width, S.file.height], body_px: S.body,
+    doors: S.doors.map(d => ({n_from_nose:d.n_from_nose,
+                              opening_px: d.in_frame ? d.opening_px : null,
+                              in_frame: d.in_frame})),
+    force: !!force,
+  };
+  const res = await fetch('/api/markup/layout', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload)});
+  if (!res.ok) { say([(await res.json()).detail || 'ошибка записи'], 'err'); return; }
+  const r = await res.json();
+  if (!r.saved) {
+    S.lastProblems = r.problems;
+    say(r.problems.concat(['Нажмите «Сохранить» ещё раз, чтобы записать вопреки замечаниям.']));
+    $('save').textContent = 'Сохранить всё равно';
+    return;
+  }
+  $('save').textContent = 'Сохранить';
+  say(['Записано: ' + r.saved].concat(r.problems), r.problems.length ? '' : 'ok');
+  loadFiles();
+}
+
+async function load() {
+  if (!S.file || !S.visitKey || S.loading) return;
+  S.loading = true;
+  try { await _load(); } finally { S.loading = false; }
+}
+
+async function _load() {
+  const res = await fetch(`/api/markup/layout?camera=${encodeURIComponent(S.file.camera)}`
+                          + `&visit_key=${encodeURIComponent(S.visitKey)}`);
+  if (!res.ok) {
+    say(['Для этого кадра сохранённой разметки нет. Готовые визиты открываются '
+         + 'из списка «Размечено» слева — он сам встаёт на нужный кадр.'], 'err');
+    return;
+  }
+  const l = await res.json();
+  $('size').value = l.size; $('orient').value = l.orientation;
+  S.body = l.body_px; S.doors = l.doors; S.target = 'body';
+  await showFrame(l.frame_idx);
+  renderTargets(); renderDoors(); draw();
+  say(['Возвращена сохранённая разметка кадра ' + l.frame_idx], 'ok');
+}
+
+// ---- Связка ----------------------------------------------------------------
+
+$('filter').oninput = renderFiles;
+$('size').onchange = resetDoors;
+$('board').oninput = updateKey;
+$('slider').oninput = ev => showFrame(+ev.target.value);
+$('center').onclick = fitView;
+$('zoomin').onclick = () => zoomAt(1.3, cv.width/2, cv.height/2);
+$('zoomout').onclick = () => zoomAt(1/1.3, cv.width/2, cv.height/2);
+$('save').onclick = () => save($('save').textContent !== 'Сохранить');
+$('load').onclick = load;
+document.querySelectorAll('[data-step]').forEach(b =>
+  b.onclick = () => showFrame(S.frame + (+b.dataset.step)));
+$('go').onclick = () => {
+  const n = $('gotoframe').value.trim();
+  if (n) return showFrame(+n);
+  const t = $('gototime').value.trim();
+  if (!t || !S.file || !S.file.start) return;
+  const [h, m, s] = t.split(':').map(Number);
+  const start = new Date(S.file.start);
+  const want = new Date(start); want.setHours(h, m, s || 0, 0);
+  showFrame((want - start) / 1000 * S.file.fps);
+};
+// ---- Панели ----------------------------------------------------------------
+// Сворачиваются обе боковые панели: кадр разглядывают подолгу и с увеличением,
+// и 560 px, занятые списками, там нужнее под сам кадр. Состояние держится между
+// заходами — сворачивать заново при каждом открытии было бы данью.
+
+function panelOff(side) {
+  return document.body.classList.contains(side + '-off');
+}
+
+function setPanel(side, off) {
+  document.body.classList.toggle(side + '-off', off);
+  const btn = $(side + 'toggle');
+  // Стрелка показывает, куда уедет панель, а не где она сейчас.
+  btn.textContent = (side === 'left') === off ? '›' : '‹';
+  btn.title = (off ? 'Развернуть' : 'Свернуть') + ' панель (клавиша «'
+            + (side === 'left' ? '[' : ']') + '»)';
+  try { localStorage.setItem('markup.panel.' + side, off ? 'off' : 'on'); } catch (e) {}
+  // Полотно занимает всю свободную ширину, а вырез мастера привязан к экранным
+  // координатам: после сдвига границы оба обязаны пересчитаться.
+  window.dispatchEvent(new Event('resize'));
+}
+
+$('lefttoggle').onclick = () => setPanel('left', !panelOff('left'));
+$('righttoggle').onclick = () => setPanel('right', !panelOff('right'));
+for (const side of ['left', 'right']) {
+  let saved = null;
+  try { saved = localStorage.getItem('markup.panel.' + side); } catch (e) {}
+  setPanel(side, saved === 'off');
+}
+
+window.addEventListener('keydown', ev => {
+  if (['INPUT','SELECT'].includes(ev.target.tagName)) return;
+  if (ev.key === '[') setPanel('left', !panelOff('left'));
+  if (ev.key === ']') setPanel('right', !panelOff('right'));
+  if (ev.key === 'ArrowLeft') showFrame(S.frame - (ev.shiftKey ? 8 : 1));
+  if (ev.key === 'ArrowRight') showFrame(S.frame + (ev.shiftKey ? 8 : 1));
+  if (ev.key === '0') fitView();
+  if (ev.key === '+' || ev.key === '=') zoomAt(1.3, cv.width/2, cv.height/2);
+  if (ev.key === '-') zoomAt(1/1.3, cv.width/2, cv.height/2);
+  if (ev.key === '?' || ev.key === 'F1') { ev.preventDefault(); openWizard(0); }
+  if (ev.key === 'Escape') closeWizard();
+});
+
+// ---- Мастер ----------------------------------------------------------------
+
+const STEPS = [
+  {
+    title: "Что вы здесь делаете",
+    body: `Размечаете <b>один визит</b> — одну машину, один раз вставшую на остановке.
+      Результат: файл с рамкой кузова и координатами дверных проёмов на
+      <b>одном конкретном кадре</b>.
+      <ul>
+        <li>Разметка привязана к кадру: по ней потом режется картинка для счёта людей.</li>
+        <li>Одна камера — один визит. Та же машина на другой камере размечается отдельно.</li>
+        <li>Разметку можно переделать: сохранение просто перезапишет файл визита.</li>
+      </ul>`,
+  },
+  {
+    target: "aside",
+    title: "Шаг 1. Выберите запись",
+    body: `Левый столбец — все боевые файлы, сгруппированные по камерам и
+      отсортированные по времени. Поле «фильтр по имени» сужает список.
+      <ul>
+        <li>Зелёная цифра у файла — сколько визитов в нём уже размечено.</li>
+        <li>Раздел «Размечено» сверху возвращает к готовой разметке одним кликом.</li>
+      </ul>`,
+  },
+  {
+    target: ".bar",
+    title: "Шаг 2. Найдите момент остановки",
+    body: `Нужен кадр, где машина <b>уже стоит</b> и видно как можно больше дверей.
+      Это не первое появление в кадре — там автобус обычно ещё наполовину за краем.
+      <ul>
+        <li>Кнопки под кадром: ±10 с, ±1 с, ±0,25 с, ±1 кадр.</li>
+        <li>Клавиши <span class="k">←</span> <span class="k">→</span> — кадр,
+            с <span class="k">Shift</span> — четверть секунды.</li>
+        <li>Поле «чч:мм:сс камеры» и кнопка «Перейти» — прыжок по часам камеры.</li>
+        <li>Внизу справа всегда видно время: по часам камеры и по шкале К2.</li>
+      </ul>`,
+  },
+  {
+    target: "#zoombar",
+    title: "Шаг 3. Масштаб, если дверь мелкая",
+    body: `Дальнюю дверь без увеличения точно не обвести.
+      <ul>
+        <li>Колесо мыши — приблизить или отдалить в точке курсора.</li>
+        <li><span class="k">Shift</span> + тяга мышью — сдвинуть кадр.</li>
+        <li><b>Кнопка «Вписать» справа вверху или клавиша <span class="k">0</span></b>
+            — вернуть кадр целиком. Увести кадр совсем из окна теперь нельзя.</li>
+      </ul>`,
+  },
+  {
+    target: "#size, #orient, #board, #facing",
+    title: "Шаг 4. Размер ТС",
+    body: `Задайте размер — он определяет, <b>сколько дверей от вас ждут</b>
+      (таблица 3 инструкции: малый 1, средний 2, большой 3, особо большой 4).
+      <ul>
+        <li>Смена размера сбрасывает уже нарисованные двери — задавайте его первым.</li>
+        <li><b>Нос кузова спрашивать не нужно</b>: на остановке весь транспорт идёт
+            в одну сторону, и нос следует из направления движения. Направление
+            задаётся <b>один раз на камеру</b> — при первом открытии её записи экран
+            спросит, куда едет транспорт в кадре, и дальше подставит нос сам.</li>
+        <li>Направление хранится на камеру, а не на остановку: камеры 2 и 3 стоят
+            спина к спине и видят одно и то же движение зеркально.</li>
+        <li>Поле «борт» необязательно, но попадает в имя визита.</li>
+      </ul>`,
+  },
+  {
+    target: "#targets",
+    title: "Шаг 5. Обведите кузов",
+    body: `Выберите «кузов» в разделе «Что рисуем» и протяните рамку по всему
+      корпусу машины — от носа до кормы.
+      <ul>
+        <li>Рамка кузова не украшение: по ней проверяется, обрезан ли корпус краем
+            кадра, а значит — законна ли отметка «дверь вне кадра».</li>
+        <li>Она же общий вход для всех автоматических методов поиска дверей.</li>
+        <li>За границы кадра рамка не выходит — обрезается сама.</li>
+      </ul>`,
+  },
+  {
+    target: "#doors",
+    title: "Шаг 6. Обведите проёмы дверей",
+    body: `Программа сама переключится на «дверь 1». Обводите <b>дверной проём</b> —
+      сам вырез в борту, а не створки и не всю дверную нишу. После каждой двери
+      выбор переходит к следующей.
+      <ul>
+        <li>Обвели не ту — щёлкните по нужной двери в списке и обведите заново.</li>
+        <li>Галочка «вне кадра» ставится только тем дверям, которых
+            <b>физически нет в кадре</b>. Дверь, которую трудно разглядеть,
+            — не «вне кадра».</li>
+      </ul>`,
+  },
+  {
+    target: "#problems, #save, #load",
+    title: "Шаг 7. Сохраните и прочитайте замечания",
+    body: `Кнопка «Сохранить» запускает проверку и записывает файл.
+      <ul>
+        <li><b>Число дверей</b> должно сойтись: по таблице 3 = в кадре + вне кадра.</li>
+        <li><b>«Вне кадра» — только с обрезанной стороны.</b> Если кузов упёрся
+            в правый край, а нос слева, то первая дверь вне кадра быть не может.</li>
+        <li><b>Проём внутри кузова.</b> Иначе размечена соседняя машина.</li>
+      </ul>
+      Замечание не запрещает сохранить: нажмите «Сохранить всё равно», если
+      уверены. Но молча записанная разметка с потерянной дверью — ровно та
+      ошибка, ради которой проверка и написана.
+      <ul>
+        <li><b>«Вернуть сохранённое»</b> отменяет ваши правки и подтягивает с диска
+            то, что было записано раньше. Нужна, когда переделали и передумали;
+            работает для визита, открытого из списка «Размечено» слева.</li>
+        <li>Повторное сохранение просто перезаписывает файл визита.</li>
+      </ul>`,
+  },
+];
+
+let wizAt = 0;
+
+function openWizard(step) {
+  wizAt = step || 0;
+  $('wizard').classList.add('on');
+  renderWizard();
+}
+
+function closeWizard() {
+  $('wizard').classList.remove('on');
+  try { localStorage.setItem('markup.wizard.seen', '1'); } catch (e) {}
+}
+
+function unionRect(selector) {
+  // Общий прямоугольник всех элементов шага: подсветка у шага одна, а
+  // показывать он может на несколько соседних кнопок сразу.
+  let box = null;
+  for (const el of document.querySelectorAll(selector)) {
+    const r = el.getBoundingClientRect();
+    if (!r.width && !r.height) continue;
+    box = box ? {left:Math.min(box.left, r.left), top:Math.min(box.top, r.top),
+                 right:Math.max(box.right, r.right), bottom:Math.max(box.bottom, r.bottom)}
+              : {left:r.left, top:r.top, right:r.right, bottom:r.bottom};
+  }
+  if (!box) return null;
+  return {...box, width: box.right - box.left, height: box.bottom - box.top};
+}
+
+function placeCard(rect) {
+  const card = $('wizcard'), pad = 18;
+  card.classList.add('near');
+  const w = card.offsetWidth, h = card.offsetHeight;
+  const vw = innerWidth, vh = innerHeight;
+  const fit = (v, size, max) => Math.max(pad, Math.min(max - size - pad, v));
+  let top, left;
+  if (rect.bottom + pad + h <= vh) {
+    top = rect.bottom + pad; left = fit(rect.left + rect.width/2 - w/2, w, vw);
+  } else if (rect.top - pad - h >= 0) {
+    top = rect.top - pad - h; left = fit(rect.left + rect.width/2 - w/2, w, vw);
+  } else if (rect.right + pad + w <= vw) {
+    left = rect.right + pad; top = fit(rect.top, h, vh);
+  } else if (rect.left - pad - w >= 0) {
+    left = rect.left - pad - w; top = fit(rect.top, h, vh);
+  } else {
+    // Подсвеченное занимает почти весь экран — ставим карточку в свободный
+    // край, лишь бы она не легла поверх того, на что показывает.
+    left = fit(vw - w - pad, w, vw);
+    top = fit(rect.top + rect.height + pad > vh ? pad : rect.bottom + pad, h, vh);
+  }
+  card.style.position = 'fixed';
+  card.style.top = top + 'px';
+  card.style.left = left + 'px';
+}
+
+function centerCard() {
+  const card = $('wizcard');
+  card.classList.remove('near');
+  card.style.position = '';
+  card.style.top = '';
+  card.style.left = '';
+}
+
+function spotlight(selector) {
+  const spot = $('spot'), wiz = $('wizard');
+  const rect = selector ? unionRect(selector) : null;
+  if (!rect) {
+    spot.classList.remove('on');
+    wiz.classList.remove('spot');
+    centerCard();
+    return;
+  }
+  const pad = 6;
+  spot.style.left = (rect.left - pad) + 'px';
+  spot.style.top = (rect.top - pad) + 'px';
+  spot.style.width = (rect.width + pad*2) + 'px';
+  spot.style.height = (rect.height + pad*2) + 'px';
+  spot.classList.add('on');
+  wiz.classList.add('spot');
+  placeCard({left:rect.left - pad, top:rect.top - pad,
+             right:rect.right + pad, bottom:rect.bottom + pad,
+             width:rect.width + pad*2, height:rect.height + pad*2});
+}
+
+// Шаг мастера показывает на то, что свёрнуто, — панель разворачивается сама.
+// Подсветка свёрнутой полоски объясняла бы ровно ничего.
+function revealFor(selector) {
+  if (!selector) return;
+  for (const el of document.querySelectorAll(selector)) {
+    if (el.closest('aside')) setPanel('left', false);
+    if (el.closest('section.right')) setPanel('right', false);
+  }
+}
+
+function renderWizard() {
+  const s = STEPS[wizAt];
+  revealFor(s.target);
+  $('wizstep').textContent = `${wizAt + 1} из ${STEPS.length}`;
+  $('wiztitle').textContent = s.title;
+  $('wizbody').innerHTML = s.body;
+  $('wizdots').innerHTML = STEPS.map((_, i) =>
+    `<i class="${i === wizAt ? 'on' : ''}"></i>`).join('');
+  $('wizprev').disabled = wizAt === 0;
+  $('wiznext').textContent = wizAt === STEPS.length - 1 ? 'Начать' : 'Дальше';
+  // После смены текста карточка меняет высоту — подсветку и положение
+  // считаем следующим кадром, по уже разложенной карточке.
+  requestAnimationFrame(() => spotlight(s.target));
+}
+
+$('helpbtn').onclick = () => openWizard(0);
+$('wizclose').onclick = closeWizard;
+$('wizprev').onclick = () => { if (wizAt > 0) { wizAt--; renderWizard(); } };
+$('wiznext').onclick = () => {
+  if (wizAt < STEPS.length - 1) { wizAt++; renderWizard(); } else closeWizard();
+};
+$('wizard').onclick = ev => {
+  if (ev.target.id === 'wizard' || ev.target.id === 'spot') closeWizard();
+};
+// Размер окна меняется — вырез обязан переехать вместе с кнопкой.
+window.addEventListener('resize', () => {
+  if ($('wizard').classList.contains('on')) spotlight(STEPS[wizAt].target);
+});
+
+// Первый заход — мастер сам. Дальше только по кнопке «?».
+try {
+  if (!localStorage.getItem('markup.wizard.seen')) openWizard(0);
+} catch (e) {}
+
+window.addEventListener('resize', resize);
+resize(); resetDoors(); loadFiles();
+</script>
+</body>
+</html>

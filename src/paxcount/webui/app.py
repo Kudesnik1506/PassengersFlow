@@ -21,9 +21,14 @@ from ..core.video import probe
 from ..doors import load_config, save_config
 from ..settings import VIDEO_SUFFIXES, videos_in
 from ..visits import build_scene
+from . import markup
 
 app = FastAPI(title="paxcount")
 PAGE = (Path(__file__).parent / "index.html").read_text(encoding="utf-8")
+
+# Разметка дверей эталона — отдельный экран на /markup: она работает по кадру
+# из файла, без кэша треков, которого у боевой записи нет.
+app.include_router(markup.router)
 
 
 def _videos() -> list[Path]:

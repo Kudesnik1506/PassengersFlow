@@ -1,0 +1,45 @@
+{
+  "visit_key": "2/2026-09-10T06:56:59/—",
+  "camera": "2",
+  "size": "Большой",
+  "orientation": "нос-справа",
+  "video": "2026-09-10 - 06-56-06 - 22739_2 - 02",
+  "frame_idx": 1590,
+  "frame_size": [
+    1920,
+    1080
+  ],
+  "body_px": [
+    0.0,
+    33.5,
+    1744.5,
+    1028.2
+  ],
+  "doors": [
+    {
+      "n_from_nose": 1,
+      "opening_px": [
+        1016.7,
+        234.6,
+        1583.5,
+        1064.8
+      ],
+      "in_frame": true
+    },
+    {
+      "n_from_nose": 2,
+      "opening_px": [
+        40.2,
+        121.3,
+        212.1,
+        651.5
+      ],
+      "in_frame": true
+    },
+    {
+      "n_from_nose": 3,
+      "opening_px": null,
+      "in_frame": false
+    }
+  ]
+}
