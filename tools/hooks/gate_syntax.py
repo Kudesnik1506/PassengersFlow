@@ -45,7 +45,17 @@ SECRET_HINTS = (
 
 
 def _git(*args: str) -> bytes:
-    return subprocess.run(["git", *args], capture_output=True, check=True).stdout
+    """git с выключенным экранированием имён.
+
+    По умолчанию git отдаёт всё, что вне ASCII, в виде `"\\342\\200\\224"` —
+    такой путь не открывается, и гейт падает трассировкой посреди коммита
+    вместо того, чтобы проверить файл. Поймано на разметке дверей: ключ визита
+    с длинным тире («борт неизвестен») попадает в имя файла.
+    """
+    return subprocess.run(
+        ["git", "-c", "core.quotepath=false", *args],
+        capture_output=True, check=True,
+    ).stdout
 
 
 def staged_sources() -> list[tuple[str, bytes]]:
