@@ -13,20 +13,31 @@ VEHICLE_CLASSES = {"bus", "truck", "train", "car"}
 
 
 def tracker_yaml(settings, out_dir: Path | None = None) -> str:
-    """Путь к конфигу трекера с нужной памятью.
+    """Путь к конфигу трекера с нужной памятью и узнаванием по внешности.
 
     Ultralytics принимает трекер ТОЛЬКО путём к файлу: `track.py` зовёт
     `check_yaml(predictor.args.tracker)`, а словарь туда не передать. Поэтому
-    файл с нужным `track_buffer` порождается здесь, из штатного конфига —
-    копией, а не написанным заново: всё остальное в нём (порог IoU,
-    компенсация движения камеры) остаётся ровно тем, что проверено.
+    файл с нужными полями порождается здесь, из штатного конфига — копией, а
+    не написанным заново: всё остальное в нём (порог IoU, компенсация движения
+    камеры) остаётся ровно тем, что проверено.
 
-    При штатной памяти возвращается имя штатного конфига: лишних файлов на
-    диске не плодим, и ключ кэша у таких прогонов не меняется.
+    При штатных значениях возвращается имя штатного конфига: лишних файлов на
+    диске не плодим, и ключ кэша у таких прогонов не меняется. Условие
+    порождения обязано перечислять ВСЕ поля, которые сюда попадают: пропусти
+    одно — и флаг молча не доедет до трекера, а число выйдет как замер.
     """
     from .. import settings as cfg
 
-    if settings.track_buffer == cfg.DEFAULT_TRACK_BUFFER:
+    suffix = ""
+    if settings.track_buffer != cfg.DEFAULT_TRACK_BUFFER:
+        suffix += f"_b{settings.track_buffer}"
+    if settings.with_reid:
+        suffix += "_reid"
+        if settings.proximity_thresh != cfg.DEFAULT_PROXIMITY_THRESH:
+            suffix += f"p{settings.proximity_thresh}"
+        if settings.appearance_thresh != cfg.DEFAULT_APPEARANCE_THRESH:
+            suffix += f"a{settings.appearance_thresh}"
+    if not suffix:
         return settings.tracker
 
     import yaml
@@ -35,10 +46,13 @@ def tracker_yaml(settings, out_dir: Path | None = None) -> str:
     base = Path(ULTRA_ROOT) / "cfg" / "trackers" / Path(settings.tracker).name
     data = yaml.safe_load(base.read_text(encoding="utf-8"))
     data["track_buffer"] = settings.track_buffer
+    data["with_reid"] = settings.with_reid
+    data["proximity_thresh"] = settings.proximity_thresh
+    data["appearance_thresh"] = settings.appearance_thresh
 
     target = Path(out_dir or (cfg.CACHE_DIR / "trackers"))
     target.mkdir(parents=True, exist_ok=True)
-    path = target / f"{Path(settings.tracker).stem}_b{settings.track_buffer}.yaml"
+    path = target / f"{Path(settings.tracker).stem}{suffix}.yaml"
     path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
     return str(path)
 

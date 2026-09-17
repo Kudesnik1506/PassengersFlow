@@ -194,11 +194,20 @@ MERGE_GROWTH = 1.2
 
 @dataclass(frozen=True)
 class AbsorptionSplit:
-    """Из чего состоят поглощения. Лечение выбирается по большинству."""
+    """Из чего состоят поглощения. Два разреза одного и того же множества.
+
+    ЧЕМ накрыто место — выбирает лечение: рамкой детектора или признаком
+    внешности. ГДЕ человек исчез — говорит, надо ли вообще лечить: пропажа
+    внутри дверной зоны это, скорее всего, посадка в автобус, то есть искомое
+    событие. Смешать её с потерей посреди тротуара значит объявить дефектом
+    собственный сигнал.
+    """
 
     merged: int      # место накрыла ВЫРОСШАЯ рамка соседа — двое в одной рамке
     occluded: int    # место накрыто чужой рамкой, но она не росла — заслонили
     invisible: int   # на месте нет ничьей рамки — детектор не выдаёт ничего
+    in_zone: int     # исчез в дверной зоне — правдоподобная посадка
+    off_zone: int    # исчез вне её — потеря трекера
 
     @property
     def total(self) -> int:
@@ -247,11 +256,13 @@ def absorption_kinds(
     """
     lives = _lives(data, zones)
     if not lives:
-        return AbsorptionSplit(0, 0, 0)
+        return AbsorptionSplit(0, 0, 0, 0, 0)
     window_end = max(f.ts for f in data.frames)
-    tally = {"merged": 0, "occluded": 0, "invisible": 0}
+    tally = {"merged": 0, "occluded": 0, "invisible": 0, "in_zone": 0, "off_zone": 0}
     for life in lives:
         if _outcome(life, lives, data, window_end, gap_seconds, radius_ratio) != "vanishing":
             continue
         tally[_kind_of_absorption(data, life, growth)] += 1
+        at_door = zones is not None and any(_inside(life.last_anchor, z) for z in zones)
+        tally["in_zone" if at_door else "off_zone"] += 1
     return AbsorptionSplit(**tally)

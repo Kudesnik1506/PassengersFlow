@@ -228,3 +228,41 @@ def test_the_split_adds_up_to_the_number_of_absorptions():
         3: (0, standing(1500.0, 300.0, 20)),
     }, tail=2)
     assert absorption_kinds(data).total == track_stats(data).vanishings
+
+
+def test_a_vanishing_inside_the_door_zone_is_told_apart():
+    """Исчезнуть в дверной зоне — это, скорее всего, сесть в автобус.
+
+    Человек, вошедший в салон, обязан пропасть с кадра: его исчезновение —
+    искомое событие, а не дефект трекинга. Свалив его в одну кучу с потерей
+    посреди тротуара, прибор объявит дефектом собственный сигнал и отправит
+    чинить то, что работает.
+    """
+    zone = (700.0, 500.0, 900.0, 700.0)
+    at_door = boxes_scene({
+        1: (0, standing(800.0, 600.0, 20)),           # умер внутри зоны
+        2: (0, standing(1500.0, 300.0, 40)),
+    }, tail=2)
+    assert absorption_kinds(at_door, zones=[zone]).in_zone == 1
+    assert absorption_kinds(at_door, zones=[zone]).off_zone == 0
+
+    walked_off = boxes_scene({
+        1: (0, [(780.0, 480.0, 820.0, 600.0)] * 5
+                + [(180.0, 480.0, 220.0, 600.0)] * 15),   # зону задел, умер вдали
+        2: (0, standing(1500.0, 300.0, 40)),
+    }, tail=2)
+    assert absorption_kinds(walked_off, zones=[zone]).off_zone == 1
+    assert absorption_kinds(walked_off, zones=[zone]).in_zone == 0
+
+
+def test_where_and_how_split_the_same_absorptions():
+    """Два разреза одного множества обязаны сойтись в сумме."""
+    zone = (700.0, 500.0, 900.0, 700.0)
+    data = boxes_scene({
+        1: (0, standing(800.0, 600.0, 20)),
+        2: (0, [(780.0, 480.0, 820.0, 600.0)] * 5
+                + [(180.0, 480.0, 220.0, 600.0)] * 15),
+        3: (0, standing(1500.0, 300.0, 40)),
+    }, tail=2)
+    split = absorption_kinds(data, zones=[zone])
+    assert split.in_zone + split.off_zone == split.total

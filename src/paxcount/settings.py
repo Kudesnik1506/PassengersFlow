@@ -96,6 +96,12 @@ CROP_MARGIN_PX = 140.0
 
 # Память трекера по умолчанию — из штатного botsort.yaml ultralytics.
 DEFAULT_TRACK_BUFFER = 30
+# Ворота узнавания из штатного botsort.yaml. Внешность учитывается ТОЛЬКО там,
+# где рамки уже перекрываются не меньше чем на PROXIMITY: см. `bot_sort.py`,
+# `emb_dists[dists_mask] = 1.0`. При 0.5 узнавание не способно вернуть
+# человека, вышедшего из-за перекрытия в стороне от места пропажи.
+DEFAULT_PROXIMITY_THRESH = 0.5
+DEFAULT_APPEARANCE_THRESH = 0.8
 
 
 @dataclass(frozen=True)
@@ -115,6 +121,16 @@ class DetectorSettings:
     # задана в кадрах, значит при шаге 3 это три секунды, а при шаге 1 — одна.
     # Меняя шаг, число надо менять вместе с ним, иначе память поедет молча.
     track_buffer: int = DEFAULT_TRACK_BUFFER
+    # Узнавать ли человека по внешности, а не только по координате. В штатном
+    # botsort.yaml выключено. Решения 057 и 058 замерили, что следы у дверей
+    # теряются не разрывом и не склейкой рамок, а тем, что человека закрывают:
+    # координата после перекрытия бесполезна, вид — нет. Цена — время детекции.
+    with_reid: bool = False
+    # Ворота узнавания. Инертны без `with_reid`, поэтому в ключ кэша входят
+    # только вместе с ним: иначе имена кэшей менялись бы от величины, которая
+    # на треки не влияет вовсе.
+    proximity_thresh: float = DEFAULT_PROXIMITY_THRESH
+    appearance_thresh: float = DEFAULT_APPEARANCE_THRESH
 
     def memory_seconds(self, fps: float) -> float:
         """Память трекера в секундах записи — величина, которая имеет смысл."""
@@ -133,6 +149,12 @@ class DetectorSettings:
         )
         if self.track_buffer != DEFAULT_TRACK_BUFFER:
             tag += f"_b{self.track_buffer}"
+        if self.with_reid:
+            tag += "_reid"
+            if self.proximity_thresh != DEFAULT_PROXIMITY_THRESH:
+                tag += f"p{self.proximity_thresh}"
+            if self.appearance_thresh != DEFAULT_APPEARANCE_THRESH:
+                tag += f"a{self.appearance_thresh}"
         return tag
 
 

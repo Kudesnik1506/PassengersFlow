@@ -61,3 +61,75 @@ def test_generated_yaml_carries_the_memory_and_keeps_the_rest(tmp_path):
 def test_default_memory_needs_no_generated_file():
     """При умолчании отдаётся штатный botsort.yaml — лишних файлов не плодим."""
     assert tracker_yaml(DetectorSettings()) == "botsort.yaml"
+
+
+# --- узнавание по внешности ------------------------------------------------
+#
+# Решения 057 и 058 закрыли всё, что двигает НОМЕР следа: частоту кадров, память
+# трекера, сшивку и пороги детектора. Осталось единственное — узнавать человека
+# по виду, а не по координате, когда он возвращается из-за перекрытия. В
+# BoT-SORT это уже есть и выключено (`with_reid: False`).
+
+def test_appearance_matching_enters_the_cache_key():
+    """Треки с узнаванием и без — разные треки, общий кэш им нельзя."""
+    assert DetectorSettings(with_reid=True).tag() != DetectorSettings().tag()
+
+
+def test_appearance_matching_alone_generates_a_config():
+    """Самая дорогая ошибка здесь — флаг, который молча ничего не включил.
+
+    Порождение файла раньше заводилось только сменой памяти. Включить
+    узнавание, не тронув память, означало бы получить штатный `botsort.yaml`,
+    прогон без ReID и число, выданное за замер нового признака.
+    """
+    assert tracker_yaml(DetectorSettings(with_reid=True)) != "botsort.yaml"
+
+
+def test_generated_yaml_turns_appearance_matching_on(tmp_path):
+    path = tracker_yaml(DetectorSettings(with_reid=True), out_dir=tmp_path)
+    cfg = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    assert cfg["with_reid"] is True
+    assert cfg["tracker_type"] == "botsort", "остальное берётся у исходного конфига"
+
+
+def test_memory_and_appearance_do_not_share_a_file(tmp_path):
+    """Два признака в одном имени: иначе прогоны перетрут друг друга."""
+    only_memory = tracker_yaml(DetectorSettings(track_buffer=90), out_dir=tmp_path)
+    both = tracker_yaml(DetectorSettings(track_buffer=90, with_reid=True),
+                         out_dir=tmp_path)
+    assert only_memory != both
+
+
+# --- ворота узнавания ------------------------------------------------------
+#
+# Включённый ReID сам по себе почти ничего не меняет, и причина в `bot_sort.py`:
+#
+#     dists_mask = dists > (1 - self.proximity_thresh)
+#     emb_dists[dists_mask] = 1.0
+#
+# внешность ВЫБРАСЫВАЕТСЯ везде, где рамки перекрываются меньше, чем на
+# `proximity_thresh`. При штатных 0.5 узнавание работает уточнением между уже
+# наложенными рамками и не способно вернуть человека, вышедшего из-за автобуса
+# в стороне от места пропажи, — то есть ровно наш случай (решения 057, 058).
+# Значит величина ворот обязана быть настраиваемой и обязана входить в ключ
+# кэша: прогоны с разными воротами — разные треки.
+
+def test_the_appearance_gate_enters_the_cache_key():
+    reid = DetectorSettings(with_reid=True)
+    assert reid.tag() != DetectorSettings(with_reid=True, proximity_thresh=0.1).tag()
+    assert reid.tag() != DetectorSettings(with_reid=True, appearance_thresh=0.5).tag()
+
+
+def test_the_appearance_gate_reaches_the_generated_config(tmp_path):
+    path = tracker_yaml(
+        DetectorSettings(with_reid=True, proximity_thresh=0.1, appearance_thresh=0.5),
+        out_dir=tmp_path,
+    )
+    cfg = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    assert cfg["proximity_thresh"] == 0.1
+    assert cfg["appearance_thresh"] == 0.5
+
+
+def test_the_gate_alone_does_not_rename_existing_caches():
+    """Ворота без узнавания инертны — имени кэша они менять не смеют."""
+    assert DetectorSettings(proximity_thresh=0.1).tag() == DetectorSettings().tag()

@@ -2,6 +2,7 @@
 
     uv run python tools/track_quality.py               # как считаем сейчас
     uv run python tools/track_quality.py --stride 1    # покадрово
+    uv run python tools/track_quality.py --reid        # с узнаванием по внешности
 
 Отвечает на один вопрос, от которого зависит, есть ли смысл в покадровой
 детекции. Решение 001: «теряется не обнаружение, а удержание личности».
@@ -59,6 +60,12 @@ def main() -> int:
                         help="шаг детекции; по умолчанию — как для этого видео")
     parser.add_argument("--track-buffer", type=int, default=None,
                         help="память трекера в обработанных кадрах")
+    parser.add_argument("--reid", action="store_true",
+                        help="узнавать человека по внешности, а не только по месту")
+    parser.add_argument("--proximity", type=float, default=None,
+                        help="ворота узнавания: ниже — внешность учитывается дальше от места пропажи")
+    parser.add_argument("--appearance", type=float, default=None,
+                        help="порог сходства внешности")
     parser.add_argument("--refresh", action="store_true")
     args = parser.parse_args()
 
@@ -91,12 +98,21 @@ def main() -> int:
             settings = replace(settings, stride=args.stride)
         if args.track_buffer is not None:
             settings = replace(settings, track_buffer=args.track_buffer)
+        if args.reid:
+            settings = replace(settings, with_reid=True)
+        if args.proximity is not None:
+            settings = replace(settings, proximity_thresh=args.proximity)
+        if args.appearance is not None:
+            settings = replace(settings, appearance_thresh=args.appearance)
 
         fps = probe(path).fps or 30.0
         half = int(round(DETECT_WINDOW_S * fps))
         windows = {k: (max(0, f - half), f + half) for k, f in marks.items()}
         console.print(f"детекция: {video_name}, окон {len(windows)}, "
-                       f"шаг {settings.stride}, память {settings.track_buffer}")
+                       f"шаг {settings.stride}, память {settings.track_buffer}, "
+                       f"узнавание {'да' if settings.with_reid else 'нет'}"
+                       + (f", ворота {settings.proximity_thresh}/{settings.appearance_thresh}"
+                          if settings.with_reid else ""))
         tracks_in_windows(path, windows, settings=settings, refresh=args.refresh,
                            progress=_progress)
 
@@ -149,21 +165,25 @@ def _print(report, args) -> None:
 
 def _print_split(report) -> None:
     """Из чего состоят поглощения — от этого зависит, что чинить."""
-    table = Table(title="Поглощения: детектор его ВИДИТ или НЕ ВИДИТ")
-    for column in ("визит", "поглощений", "слиянием рамок", "заслонён", "невидим"):
+    table = Table(title="Поглощения: где человек исчез и чем накрыто место")
+    for column in ("визит", "поглощений", "в дверной зоне (посадка?)",
+                    "вне зоны (потеря)", "слиянием рамок", "заслонён", "невидим"):
         table.add_column(column, no_wrap=True)
-    total = [0] * 4
+    total = [0] * 6
     for number, _, _, split in sorted(report, key=lambda r: r[0]):
-        table.add_row(number, str(split.total), str(split.merged),
+        table.add_row(number, str(split.total), str(split.in_zone),
+                       str(split.off_zone), str(split.merged),
                        str(split.occluded), str(split.invisible))
-        for i, v in enumerate((split.total, split.merged, split.occluded,
-                                split.invisible)):
+        for i, v in enumerate((split.total, split.in_zone, split.off_zone,
+                                split.merged, split.occluded, split.invisible)):
             total[i] += v
     table.add_section()
     table.add_row("всего", *(str(v) for v in total))
     console.print(table)
     console.print(
-        "[dim]слиянием рамок — место накрыла ВЫРОСШАЯ рамка соседа: детектор человека "
+        "[dim]в дверной зоне — человек пропал там, где садятся: это правдоподобная "
+        "посадка, то есть искомое событие, а не дефект.\nслиянием рамок — место накрыла "
+        "ВЫРОСШАЯ рамка соседа: детектор человека "
         "видит, но отдал одну рамку на двоих. Это про подавление дубликатов в "
         "детекторе.\nзаслонён и невидим — детектор на этом месте не отдаёт ничего. "
         "Порогами детектора не лечится, нужен признак внешности.[/dim]"
