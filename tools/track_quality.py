@@ -36,7 +36,7 @@ from paxcount.core.trackdata import load  # noqa: E402
 from paxcount.core.video import probe  # noqa: E402
 from paxcount.settings import DATA_DIR, detector_for, videos_in  # noqa: E402
 from paxcount.stitching import build_remap  # noqa: E402
-from paxcount.trackstats import track_stats  # noqa: E402
+from paxcount.trackstats import absorption_kinds, track_stats  # noqa: E402
 from paxcount.truth import load_door_layout, visit_moment  # noqa: E402
 from paxcount import truth_rows  # noqa: E402
 
@@ -108,12 +108,13 @@ def main() -> int:
             # Иначе прибор меряет людность улицы, а не работу трекера.
             zones = [s.zone for s in door_specs(layouts[key])] or None
             stats = track_stats(raw, zones=zones)
+            split = absorption_kinds(raw, zones=zones)
             row = match_row(cases[key].camera, visit_moment(key), rows)
             # В remap попадают ВСЕ треки, включая корни цепочек (id → сам
             # себе). Сшивка — только те, у кого корень чужой.
             remap = build_remap(raw)
             stitched = sum(1 for tid, root in remap.items() if tid != root)
-            report.append((str(row.number) if row else key, stats, stitched))
+            report.append((str(row.number) if row else key, stats, stitched, split))
 
     _print(report, args)
     return 0
@@ -126,7 +127,7 @@ def _print(report, args) -> None:
                     "сшивок (все следы окна)"):
         table.add_column(column, no_wrap=True)
     total = [0] * 7
-    for number, s, stitches in sorted(report, key=lambda r: r[0]):
+    for number, s, stitches, _ in sorted(report, key=lambda r: r[0]):
         table.add_row(number, str(s.tracks), str(s.fragments),
                        f"{s.median_seconds:.2f}", str(s.handovers),
                        str(s.vanishings), str(s.at_border),
@@ -142,6 +143,30 @@ def _print(report, args) -> None:
         "[dim]передача личности — след оборвался, рядом родился другой: это разрыв, "
         "его лечит частота кадров.\nпоглощение — оборвался, и никто рядом не родился: "
         "человек слит с чужой рамкой, частота кадров тут ни при чём.[/dim]"
+    )
+    _print_split(report)
+
+
+def _print_split(report) -> None:
+    """Из чего состоят поглощения — от этого зависит, что чинить."""
+    table = Table(title="Поглощения: детектор его ВИДИТ или НЕ ВИДИТ")
+    for column in ("визит", "поглощений", "слиянием рамок", "заслонён", "невидим"):
+        table.add_column(column, no_wrap=True)
+    total = [0] * 4
+    for number, _, _, split in sorted(report, key=lambda r: r[0]):
+        table.add_row(number, str(split.total), str(split.merged),
+                       str(split.occluded), str(split.invisible))
+        for i, v in enumerate((split.total, split.merged, split.occluded,
+                                split.invisible)):
+            total[i] += v
+    table.add_section()
+    table.add_row("всего", *(str(v) for v in total))
+    console.print(table)
+    console.print(
+        "[dim]слиянием рамок — место накрыла ВЫРОСШАЯ рамка соседа: детектор человека "
+        "видит, но отдал одну рамку на двоих. Это про подавление дубликатов в "
+        "детекторе.\nзаслонён и невидим — детектор на этом месте не отдаёт ничего. "
+        "Порогами детектора не лечится, нужен признак внешности.[/dim]"
     )
 
 

@@ -116,6 +116,34 @@ def _at_border(box: np.ndarray, width: int, height: int) -> bool:
     )
 
 
+def _area(box) -> float:
+    return float(max(box[2] - box[0], 0.0) * max(box[3] - box[1], 0.0))
+
+
+def _outcome(life: _Life, lives: list[_Life], data: TrackData, window_end: float,
+              gap_seconds: float, radius_ratio: float) -> str:
+    """Чем кончился след: alive / border / handover / vanishing.
+
+    Одна функция на оба прибора намеренно: разбор поглощений обязан считать
+    поглощением ровно то же, что и сводка. Разъедутся — доли будут посчитаны
+    от разных знаменателей, и выбор лечения окажется случайным.
+    """
+    # Дожил до конца окна: окно кончилось раньше человека, это не смерть.
+    if window_end - life.last_ts <= gap_seconds:
+        return "alive"
+    if _at_border(life.last_box, data.width, data.height):
+        return "border"
+    radius = radius_ratio * max(float(life.last_box[3] - life.last_box[1]), 1.0)
+    heir = any(
+        other.tid != life.tid
+        and 0.0 <= other.first_ts - life.last_ts <= gap_seconds
+        and np.hypot(other.first_anchor[0] - life.last_anchor[0],
+                      other.first_anchor[1] - life.last_anchor[1]) <= radius
+        for other in lives
+    )
+    return "handover" if heir else "vanishing"
+
+
 def track_stats(
     data: TrackData,
     zones: list[Zone] | None = None,
@@ -139,28 +167,11 @@ def track_stats(
         return TrackStats(0, 0, 0.0, 0, 0, 0, 0)
 
     window_end = max(f.ts for f in data.frames)
-    handovers = vanishings = at_border = alive = 0
-
+    tally = {"alive": 0, "border": 0, "handover": 0, "vanishing": 0}
     for life in lives:
-        # Дожил до конца окна: окно кончилось раньше человека, это не смерть.
-        if window_end - life.last_ts <= gap_seconds:
-            alive += 1
-            continue
-        if _at_border(life.last_box, data.width, data.height):
-            at_border += 1
-            continue
-        radius = radius_ratio * max(float(life.last_box[3] - life.last_box[1]), 1.0)
-        heir = any(
-            other.tid != life.tid
-            and 0.0 <= other.first_ts - life.last_ts <= gap_seconds
-            and np.hypot(other.first_anchor[0] - life.last_anchor[0],
-                          other.first_anchor[1] - life.last_anchor[1]) <= radius
-            for other in lives
-        )
-        if heir:
-            handovers += 1
-        else:
-            vanishings += 1
+        tally[_outcome(life, lives, data, window_end, gap_seconds, radius_ratio)] += 1
+    handovers, vanishings = tally["handover"], tally["vanishing"]
+    at_border, alive = tally["border"], tally["alive"]
 
     spans = sorted(life.seconds for life in lives)
     return TrackStats(
@@ -172,3 +183,75 @@ def track_stats(
         at_border=at_border,
         alive_at_edge=alive,
     )
+
+
+# Во сколько раз обязана вырасти рамка соседа, чтобы счесть её слиянием.
+# Двое стоящих вплотную дают рамку примерно вдвое шире одиночной, так что 1.2 —
+# осторожный низ: дыхание рамки одного человека за слияние не сойдёт, а
+# настоящая склейка двоих пройдёт с запасом.
+MERGE_GROWTH = 1.2
+
+
+@dataclass(frozen=True)
+class AbsorptionSplit:
+    """Из чего состоят поглощения. Лечение выбирается по большинству."""
+
+    merged: int      # место накрыла ВЫРОСШАЯ рамка соседа — двое в одной рамке
+    occluded: int    # место накрыто чужой рамкой, но она не росла — заслонили
+    invisible: int   # на месте нет ничьей рамки — детектор не выдаёт ничего
+
+    @property
+    def total(self) -> int:
+        return self.merged + self.occluded + self.invisible
+
+
+def _kind_of_absorption(data: TrackData, life: _Life, growth: float) -> str:
+    """Чем накрыто место исчезнувшего на СЛЕДУЮЩЕМ кадре.
+
+    Точка опоры берётся та же, по которой решается принадлежность зоне: у
+    стоящего дальше от камеры ноги выше на кадре, поэтому его опора попадает
+    внутрь рамки того, кто стоит ближе и его заслоняет.
+    """
+    idx = next((k for k, f in enumerate(data.frames) if f.ts == life.last_ts), None)
+    if idx is None or idx + 1 >= len(data.frames):
+        return "invisible"          # следующего кадра нет — судить не по чему
+    dying, after = data.frames[idx], data.frames[idx + 1]
+    was = {int(t): _area(b) for t, b in zip(dying.person_ids, dying.person_boxes)}
+
+    covering = [
+        (int(tid), box) for tid, box in zip(after.person_ids, after.person_boxes)
+        if int(tid) != life.tid and _inside(life.last_anchor, tuple(box))
+    ]
+    if not covering:
+        return "invisible"
+    # Хватает одной выросшей: слияние — утверждение о конкретной рамке, и
+    # присутствие рядом второй, не выросшей, его не отменяет.
+    if any(tid in was and _area(box) >= growth * was[tid] for tid, box in covering):
+        return "merged"
+    return "occluded"
+
+
+def absorption_kinds(
+    data: TrackData,
+    zones: list[Zone] | None = None,
+    gap_seconds: float = SWITCH_SECONDS,
+    radius_ratio: float = SWITCH_RADIUS,
+    growth: float = MERGE_GROWTH,
+) -> AbsorptionSplit:
+    """Разбор поглощений на механизмы. Считается на СЫРЫХ треках, до сшивки.
+
+    Вопрос, ради которого прибор существует: чинить детектор или трекер.
+    Слияние — про подавление дубликатов в детекторе, он человека видит.
+    Невидимость и заслон — про узнавание по внешности, детектор не видит
+    ничего, и порогами NMS этого не поправить.
+    """
+    lives = _lives(data, zones)
+    if not lives:
+        return AbsorptionSplit(0, 0, 0)
+    window_end = max(f.ts for f in data.frames)
+    tally = {"merged": 0, "occluded": 0, "invisible": 0}
+    for life in lives:
+        if _outcome(life, lives, data, window_end, gap_seconds, radius_ratio) != "vanishing":
+            continue
+        tally[_kind_of_absorption(data, life, growth)] += 1
+    return AbsorptionSplit(**tally)
