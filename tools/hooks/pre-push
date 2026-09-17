@@ -82,8 +82,8 @@ fi
 if ! command -v uv >/dev/null 2>&1; then
     echo "· uv не найден — семантические гейты пропущены"
 elif [ -z "$(find data/test_videos data/prod_videos -type f \
-        \( -name '*.webm' -o -name '*.mp4' -o -name '*.ogv' -o -name '*.mov' \
-           -o -name '*.avi' -o -name '*.mkv' \) 2>/dev/null)" ]; then
+        \( -iname '*.webm' -o -iname '*.mp4' -o -iname '*.ogv' -o -iname '*.mov' \
+           -o -iname '*.avi' -o -iname '*.mkv' \) 2>/dev/null)" ]; then
     echo "· видео нет — семантические гейты пропущены."
     echo "  Это ожидаемо на свежем клоне: кадры не версионируются (лица и номера машин),"
     echo "  см. data/test_videos/SOURCES.md и data/prod_videos/README.md"
