@@ -135,9 +135,49 @@ def test_different_buses_in_one_minute_both_stay():
     assert drop_duplicates([a, b]).kept == [a, b]
 
 
-def test_duplicate_window_is_shorter_than_the_gap_between_buses():
-    """Окно дубля меряется против потока: медиана интервала прибытий 80 с."""
-    assert DUPLICATE_WINDOW_S < 80
+def test_the_window_is_measured_against_the_same_bus_not_against_the_flow():
+    """Окно меряется по ТОЙ ЖЕ машине, а не по потоку разных.
+
+    Раньше здесь стояло `< 80` — медиана интервала между прибытиями. Величина
+    не та: снятие дублей идёт по бортовому номеру, и две разные машины не
+    столкнутся никогда, как бы плотно они ни шли. Значение имеет другое
+    расстояние — между двумя НАСТОЯЩИМИ заездами одного борта.
+
+    Замер по суткам на 22739 (после починки полей): 51 пара одного борта лежит
+    в пределах 63 секунд, следующая — через два часа. Между ними пусто, и порог
+    обязан стоять внутри этой пустой полосы, а не на её краю.
+    """
+    assert 63 < DUPLICATE_WINDOW_S < 2 * 3600
+
+
+def test_a_repeat_press_just_over_a_minute_is_still_a_duplicate():
+    """Автобус не возвращается на остановку через минуту.
+
+    Борт 38427, строки 527 и 537: 08:35:52 и 08:36:55, тот же маршрут 226,
+    наполненность исправлена с А на Б. Шестьдесят три секунды — это второе
+    нажатие, а не второй приезд, и прежнее окно в минуту его пропускало.
+    """
+    first = rec(board="38427", route="226", occupancy="А", row=527)
+    second = rec(created=first.created + timedelta(seconds=63), board="38427",
+                  route="226", occupancy="Б", row=537)
+    result = drop_duplicates([first, second])
+    assert [r.row for r in result.kept] == [527]
+    assert [r.row for r in result.dropped] == [537]
+
+
+def test_duplicates_are_found_by_the_repaired_number_not_the_typed_one():
+    """Личность машины известна только ПОСЛЕ починки полей.
+
+    Оператор путает борт с маршрутом. Пока сверка идёт по напечатанному, две
+    записи одной машины выглядят как разные борта — а две разные машины, у
+    которых в графу борта попал один и тот же номер маршрута, наоборот,
+    сливаются в одну. Обе ошибки тихие.
+    """
+    clean = rec(board="38201", route="225", row=1)
+    swapped = rec(created=clean.created + timedelta(seconds=10),
+                   board="225", route="38201", row=2)
+    result = drop_duplicates([clean, swapped])
+    assert [r.row for r in result.kept] == [1], "это одна машина, а не две"
 
 
 # ---- Смены -----------------------------------------------------------------
@@ -198,10 +238,17 @@ class TestRealExport:
         unfixed = [fixed for fixed, note in repaired if note is None]
         assert [r.board for r in unfixed] == ["382252"]
 
-    def test_fifty_duplicates_removed(self, records):
+    def test_fifty_one_duplicates_removed(self, records):
+        """51, а не 50: пятьдесят первый — борт 38427 через 63 секунды.
+
+        Прежнее окно в минуту обрезало его по краю, и он уходил в книгу второй
+        строкой той же машины. Замер: интервалы одного борта — 51 пара до 63 с,
+        следующая через два часа.
+        """
         result = drop_duplicates(records)
-        assert len(result.dropped) == 50
-        assert len(result.kept) == 242
+        assert len(result.dropped) == 51
+        assert len(result.kept) == 241
+        assert 537 in [r.row for r in result.dropped], "борт 38427, 08:36:55"
 
     def test_four_pairs_disagree_on_the_route(self, records):
         """Оператор сам себя поправил четырежды — эти маршруты под сомнением."""
