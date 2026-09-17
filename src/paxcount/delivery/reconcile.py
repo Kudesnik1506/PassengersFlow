@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
+from ..doorprop.layout import NOSE_LEFT, NOSE_RIGHT
 from ..truth import DoorLayout
 from .model import DOORS_BY_SIZE, DeliveryRow, VehicleKind, VehicleSize
 
@@ -91,6 +92,47 @@ def comment_code(layout: DoorLayout) -> tuple[int | None, str | None]:
         "первую дверь, первую половину, последнюю и последнюю половину — "
         "этот случай решает человек"
     )
+
+
+# Допуск, в пределах которого рамка считается упёршейся в край кадра. Детектор
+# кладёт бок машины ровно на границу, но округление и сглаживание трека дают
+# пиксель-другой отступа, и жёсткое равенство пропускало бы настоящий обрез.
+EDGE_TOLERANCE_PX = 2.0
+
+
+def clipped_code(body_px: tuple[float, float, float, float],
+                  frame_size: tuple[int, int],
+                  orientation: str | None) -> tuple[int | None, str | None]:
+    """Код таблицы 2 по тому, упёрся ли кузов в край кадра. Без ручной разметки.
+
+    `comment_code` спрашивает разметку — какие двери человек отметил невидимыми,
+    — и потому молчит на трёхстах строках, где разметки нет. Но самый частый
+    случай виден и без неё: машина не влезла в кадр. Какой конец срезан, нос или
+    корма, следует из направления движения, а оно задано на камеру (`cameras`).
+
+    Возвращаются только 5 и 7 — «не попала первая дверь» и «не попала
+    последняя». Сказать «половина» (коды 6 и 8) отсюда нельзя: для этого надо
+    знать, СКОЛЬКО кузова осталось за кадром, а видно только то, что внутри.
+
+    `None` с пояснением — случай не наш, и подбирать ближайший похожий код
+    нельзя: зеркальный код уйдёт заказчику правдоподобным и неверным.
+    """
+    if orientation not in (NOSE_LEFT, NOSE_RIGHT):
+        return None, ("направление движения для камеры не задано — какой конец "
+                       "срезан, неизвестно, а зеркальный код хуже пустой графы")
+
+    left, _, right, _ = body_px
+    width = frame_size[0]
+    cut_left = left <= EDGE_TOLERANCE_PX
+    cut_right = right >= width - EDGE_TOLERANCE_PX
+    if not cut_left and not cut_right:
+        return None, None
+    if cut_left and cut_right:
+        return None, ("кузов срезан с обеих сторон: таблица 2 описывает начало "
+                       "и конец по отдельности, такого случая в ней нет")
+
+    nose_cut = cut_right if orientation == NOSE_RIGHT else cut_left
+    return (5 if nose_cut else 7), None
 
 
 def gap_note(camera: str, start: datetime, end: datetime) -> str:

@@ -184,3 +184,65 @@ def test_row_with_partial_data_still_passes_the_validator():
     from paxcount.delivery.validate import validate
 
     assert validate([row(boarded=None, alighted=None, size=None)]) == []
+
+
+# ---- Код таблицы 2 по обрезу кузова, без ручной разметки -----------------------
+#
+# `comment_code` спрашивает разметку: какие двери человек отметил как невидимые.
+# Разметка есть на шесть визитов из трёхсот. Но сам частый случай — «машина не
+# влезла в кадр» — виден и без неё: рамка ТС упирается в край кадра, а какой это
+# конец, нос или корма, следует из направления движения (`cameras`, замерено на
+# камеру). Этого хватает на коды 5 и 7.
+#
+# Коды 6 и 8 (половина кузова) отсюда не берутся: чтобы сказать «половина», надо
+# знать, СКОЛЬКО осталось за кадром, а видно только то, что внутри.
+
+from paxcount.doorprop.layout import NOSE_LEFT, NOSE_RIGHT
+
+FRAME = (1920, 1080)
+
+
+def test_a_body_that_fits_the_frame_needs_no_code():
+    from paxcount.delivery.reconcile import clipped_code
+
+    assert clipped_code((300.0, 200.0, 1500.0, 900.0), FRAME, NOSE_RIGHT) == (None, None)
+
+
+def test_the_nose_cut_off_loses_the_first_door():
+    """Нос справа, рамка упёрлась в правый край — за кадром первая дверь."""
+    from paxcount.delivery.reconcile import clipped_code
+
+    assert clipped_code((300.0, 200.0, 1920.0, 900.0), FRAME, NOSE_RIGHT)[0] == 5
+
+
+def test_the_tail_cut_off_loses_the_last_door():
+    from paxcount.delivery.reconcile import clipped_code
+
+    assert clipped_code((0.0, 200.0, 1500.0, 900.0), FRAME, NOSE_RIGHT)[0] == 7
+
+
+def test_the_mirror_camera_gives_the_mirror_code():
+    """У К3 нос смотрит влево: тот же левый обрез теряет уже ПЕРВУЮ дверь.
+
+    Зеркальная ошибка тут самая дорогая: код уйдёт заказчику правдоподобным.
+    """
+    from paxcount.delivery.reconcile import clipped_code
+
+    assert clipped_code((0.0, 200.0, 1500.0, 900.0), FRAME, NOSE_LEFT)[0] == 5
+    assert clipped_code((300.0, 200.0, 1920.0, 900.0), FRAME, NOSE_LEFT)[0] == 7
+
+
+def test_a_body_cut_at_both_ends_is_not_in_the_table():
+    """Таблица 2 знает начало и конец, а «кузов шире кадра» в ней не описан."""
+    from paxcount.delivery.reconcile import clipped_code
+
+    code, why = clipped_code((0.0, 200.0, 1920.0, 900.0), FRAME, NOSE_RIGHT)
+    assert code is None and why and "обе" in why
+
+
+def test_an_unknown_nose_refuses_to_guess():
+    """Направление камеры не задано — кода нет: зеркальный код хуже пустой графы."""
+    from paxcount.delivery.reconcile import clipped_code
+
+    code, why = clipped_code((0.0, 200.0, 1500.0, 900.0), FRAME, None)
+    assert code is None and why and "направлени" in why
