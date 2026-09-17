@@ -61,6 +61,7 @@ def door_specs(
     layout: DoorLayout,
     side_margin: float = DOOR_SIDE_MARGIN,
     per_door_band: bool = False,
+    band_from_sill: float | None = None,
 ) -> list[DoorSpec]:
     """Зоны счёта по разметке визита — в абсолютных пикселях кадра.
 
@@ -71,6 +72,11 @@ def door_specs(
     ``side_margin`` расширяет зону ВБОК на долю высоты полосы ног. Вертикаль он
     не трогает: она измерена по 7116 наблюдениям, а горизонталь — просто
     размеченная ширина проёма, и на боевых записях это бывает 7 пикселей.
+
+    ``band_from_sill`` поднимает ВЕРХ полосы до порога двери (с запасом в долях
+    высоты проёма), не трогая низ. В отличие от `per_door_band` зону он только
+    расширяет, поэтому событий не теряет. Замер: +1 настоящий выход на визите 6
+    и +1 ложный вход на визите 2, размен один к одному (решение 066).
 
     ``per_door_band`` отсчитывает полосу от порога КАЖДОЙ двери, а не от низа
     кузова. Толщина полосы та же — меняется только точка отсчёта. На боковом
@@ -91,6 +97,10 @@ def door_specs(
         if per_door_band:
             sill = door.opening_px[3]
             top, bottom = sill - BAND_ABOVE * height, sill + BAND_BELOW * height
+        elif band_from_sill is not None:
+            opening_h = door.opening_px[3] - door.opening_px[1]
+            top = min(body_top, door.opening_px[3] - band_from_sill * opening_h)
+            bottom = body_bottom
         else:
             top, bottom = body_top, body_bottom
         left = door.opening_px[0] - margin
@@ -166,9 +176,10 @@ def count_doors(
     window: tuple[float, float],
     side_margin: float = DOOR_SIDE_MARGIN,
     per_door_band: bool = False,
+    band_from_sill: float | None = None,
 ) -> dict[str, tuple[int, int]]:
     """Вошло и вышло по каждой двери разметки. Счётчик — боевой, не свой."""
-    specs = door_specs(layout, side_margin, per_door_band)
+    specs = door_specs(layout, side_margin, per_door_band, band_from_sill)
     counts = {spec.door_id: (0, 0) for spec in specs}
     if not specs:
         return counts

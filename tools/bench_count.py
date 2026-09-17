@@ -60,6 +60,8 @@ def main() -> int:
     parser.add_argument("--out", type=Path, default=OUT_DIR)
     parser.add_argument("--side-margin", type=float, default=None,
                         help="боковой допуск дверной зоны, долями высоты полосы ног")
+    parser.add_argument("--band-from-sill", type=float, default=None,
+                        help="поднять верх полосы до порога двери, долями высоты проёма")
     parser.add_argument("--per-door-band", action="store_true",
                         help="отсчитывать полосу ног от порога каждой двери")
     parser.add_argument("--refresh", action="store_true",
@@ -129,7 +131,8 @@ def main() -> int:
             margin = (DOOR_SIDE_MARGIN if args.side_margin is None
                        else args.side_margin)
             per_variant[variant] = count_doors(
-                data, layout, window, margin, args.per_door_band)
+                data, layout, window, margin, args.per_door_band,
+                args.band_from_sill)
 
         visits.append({
             "№": number,

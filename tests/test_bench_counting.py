@@ -316,3 +316,23 @@ def test_per_door_band_changes_nothing_when_the_sill_is_the_body_bottom():
     plain = door_specs(layout([opening]), side_margin=0.0)[0]
     moved = door_specs(layout([opening]), side_margin=0.0, per_door_band=True)[0]
     assert moved.zone == pytest.approx(plain.zone)
+
+
+def test_band_from_sill_lifts_only_the_top_and_only_upwards():
+    """Верх полосы поднимается до порога двери; низ и остальное не трогаются.
+
+    Вариант отличается от `per_door_band` тем, что зону только РАСШИРЯЕТ: у
+    двери с низким порогом полоса остаётся прежней, у двери с высоким —
+    дотягивается вверх. Поэтому он не теряет событий, а только может добавить.
+    """
+    low = (500.0, 380.0, 600.0, BODY[3])          # порог у самой земли
+    plain = door_specs(layout([low]), side_margin=0.0)[0]
+    same = door_specs(layout([low]), side_margin=0.0, band_from_sill=0.2)[0]
+    assert same.zone == pytest.approx(plain.zone), "низкий порог зону не двигает"
+
+    high = (500.0, 380.0, 600.0, BODY[1] + 0.2 * (BODY[3] - BODY[1]))
+    lifted = door_specs(layout([high]), side_margin=0.0, band_from_sill=0.2)[0]
+    base = door_specs(layout([high]), side_margin=0.0)[0]
+    assert lifted.zone[1] < base.zone[1], "высокий порог тянет верх полосы вверх"
+    assert lifted.zone[3] == base.zone[3], "низ полосы остаётся общим"
+    assert (lifted.zone[0], lifted.zone[2]) == (base.zone[0], base.zone[2])
