@@ -169,6 +169,23 @@ class PortalClient:
         # государственный портал — один раз.
         self._cache: dict[tuple[str, str], list] = {}
 
+    def snapshot(self) -> dict:
+        """Кэш ответов в виде, который переживает json: ключ — «борт|дата».
+
+        Нужен между запусками: портал государственный, доступ общий, а книга
+        пересобирается по многу раз за день. Двести бортов на прогон — двести
+        одинаковых запросов к чужой системе.
+        """
+        return {f"{board}|{date}": rows for (board, date), rows in self._cache.items()}
+
+    def preload(self, saved: dict) -> None:
+        """Поднимает сохранённый кэш. Чужие ключи молча не берём — падаем."""
+        for key, rows in saved.items():
+            board, _, date = key.partition("|")
+            if not date:
+                raise ValueError(f"ключ кэша не в форме «борт|дата»: {key!r}")
+            self._cache[(board, date)] = rows
+
     def _authenticate(self) -> None:
         if self._authenticated:
             return

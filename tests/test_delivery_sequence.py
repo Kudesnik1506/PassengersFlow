@@ -232,3 +232,19 @@ def test_the_reason_for_the_repair_travels_with_the_row():
     """Спор о строке разбирается по объяснению, а не по памяти сборщика."""
     entry = merged([], [record("07:00:00", "50", "1536")], timedelta(0))[0]
     assert "поменяны местами" in " ".join(entry.row.overrides.values())
+
+
+def test_the_entry_carries_its_own_agreement():
+    """Итог сверки живёт в строке ленты, а не в карте по объекту.
+
+    Карта «объект строки → сверка» рассыпается, как только строку заменяют:
+    подстановка госномера делает НОВЫЙ объект, и книга падала ровно на этом.
+    Опознание по личности объекта здесь и не нужно — лента уже знает, откуда
+    каждая её строка.
+    """
+    match = record("06:54:59", "1596")
+    entry = merged([decoded("07:02:17", "1596", match=match)], [match],
+                    timedelta(minutes=7, seconds=18))[0]
+    assert entry.agreement is not None
+    assert entry.agreement.record is match
+    assert merged([], [record("07:00:00", "1111")], timedelta(0))[0].agreement is None

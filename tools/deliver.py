@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections import Counter
 from dataclasses import replace
@@ -48,6 +49,7 @@ from paxcount.delivery.marking import (  # noqa: E402
     marks_for, marks_for_duplicate, marks_for_our_measurement, marks_for_repair,
 )
 from paxcount.delivery.model import Occupancy  # noqa: E402
+from paxcount.delivery.plates import with_plate  # noqa: E402
 from paxcount.delivery.operator import (  # noqa: E402
     drop_duplicates, for_stop, read_export,
 )
@@ -57,6 +59,7 @@ from paxcount.delivery.sequence import (  # noqa: E402
 from paxcount.delivery.timeline import file_at, parse_slot  # noqa: E402
 from paxcount.delivery.validate import validate  # noqa: E402
 from paxcount.delivery.xlsx import write_rows  # noqa: E402
+from paxcount import portal  # noqa: E402
 from paxcount.settings import DATA_DIR, OUT_DIR  # noqa: E402
 from paxcount.truth import load_door_layout, visit_moment  # noqa: E402
 from paxcount import truth_rows  # noqa: E402
@@ -149,6 +152,43 @@ def reference_slots(stop: str, camera: str = "2") -> list:
     return slots
 
 
+def ask_the_portal(entries: list, stop: str) -> list:
+    """Меняет бортовые номера на государственные — дорогой решения 026.
+
+    Ответы кладутся в `out/` и поднимаются оттуда на следующем прогоне: портал
+    государственный, доступ общий на нескольких расшифровщиков, а книга
+    пересобирается по многу раз. В репозиторий кэш не уходит — там настоящие
+    госномера (решение 018), а `out/` закрыт `.gitignore`.
+    """
+    cache_path = OUT_DIR / "portal" / f"{stop}.json"
+    login, password = portal.credentials()
+    client = portal.PortalClient(portal.http_transport(), login, password)
+    if cache_path.exists():
+        client.preload(json.loads(cache_path.read_text(encoding="utf-8")))
+        console.print(f"кэш портала: {len(client.snapshot())} машин из {cache_path}")
+
+    asked = {e.row.board_number for e in entries
+              if e.row.board_number and not e.row.state_number}
+    console.print(f"портал: спрашиваем {len(asked)} бортовых номеров")
+    out = []
+    for n, entry in enumerate(entries, start=1):
+        try:
+            row = with_plate(entry.row, entry.moment, client.lookup)
+        except Exception as exc:               # сеть, учётка, форма ответа
+            console.print(f"[red]портал замолчал на {entry.row.board_number}: {exc}[/red]")
+            out.extend(entries[n - 1:])
+            break
+        out.append(replace(entry, row=row))
+        if n % 25 == 0:
+            console.print(f"  строка {n} из {len(entries)}")
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(client.snapshot(), ensure_ascii=False),
+                           encoding="utf-8")
+    found = sum(1 for e in out if e.row.state_number)
+    console.print(f"госномеров в книге: {found} из {len(out)} строк")
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--doors", type=Path, default=DATA_DIR / "truth" / "doors")
@@ -159,6 +199,8 @@ def main() -> int:
                         help="выгрузка оператора: сверка и наполненность")
     parser.add_argument("--template", type=Path, default=None,
                         help="шаблон заказчика: книга пишется по нему, со списками и стилями")
+    parser.add_argument("--portal", action="store_true",
+                        help="спросить госномера у портала по бортовым (сеть, учётка из .env)")
     parser.add_argument("--only-decoded", action="store_true",
                         help="только расшифрованные машины, без ленты всей смены")
     parser.add_argument("--out", type=Path, default=OUT_DIR)
@@ -229,8 +271,10 @@ def main() -> int:
             e, row=e.row.model_copy(update={"video": file_at(e.moment, slots)}))
         for e in entries
     ]
+    if args.portal:
+        entries = ask_the_portal(entries, args.stop)
+
     rows = [e.row for e in entries]
-    deals = {id(d.row): d.agreement for d in decoded}
 
     # Строка оператора, которую мы не расшифровывали, не красится вовсе: она
     # целиком его, спорить в ней не с чем. Красятся только наши (решение 070).
@@ -247,7 +291,7 @@ def main() -> int:
         else:
             # Наш счёт в чужой строке — тоже наше утверждение, и без пометки
             # его в ленте из трёхсот строк не найти.
-            marks = marks_for(deals[id(entry.row)]) | marks_for_our_measurement(entry.row)
+            marks = marks_for(entry.agreement) | marks_for_our_measurement(entry.row)
         if marks:
             highlight[i] = marks
 
@@ -256,7 +300,7 @@ def main() -> int:
                     "запол", "вышло", "зашло", "код", "источник", "сверка"):
         table.add_column(column, no_wrap=True)
     for i, entry in enumerate(entries, start=2):
-        row, deal = entry.row, deals.get(id(entry.row))
+        row, deal = entry.row, entry.agreement
         if not entry.decoded:
             verdict = ""
             source = ("[magenta]повтор[/magenta]"

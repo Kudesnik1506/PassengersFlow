@@ -66,6 +66,9 @@ class Entry:
     decoded: bool
     record: OperatorRecord | None = None
     repaired: frozenset[str] = frozenset()
+    # Итог сверки едет вместе со строкой, а не в карте по объекту: строку
+    # заменяют (подстановка госномера делает новый объект), и карта рассыпается.
+    agreement: Agreement | None = None
 
 
 def clock_shift(decoded: list[Decoded]) -> timedelta | None:
@@ -155,7 +158,8 @@ def merge(
 
     taken = {id(d.agreement.record) for d in decoded if d.agreement.record is not None}
     entries = [
-        Entry(moment=d.moment, row=d.row, decoded=True, record=d.agreement.record)
+        Entry(moment=d.moment, row=d.row, decoded=True,
+               record=d.agreement.record, agreement=d.agreement)
         for d in decoded
     ]
     for r in records:

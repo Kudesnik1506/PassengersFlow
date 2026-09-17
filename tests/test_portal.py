@@ -271,3 +271,36 @@ def test_raw_rows_are_cached_across_different_times():
     client.lookup("38182", "2026-09-10", VehicleKind.BUS, at=datetime(2026, 9, 10, 15, 0))
     searches = [c for c in transport.calls if c[0].endswith("list")]
     assert len(searches) == 1
+
+
+# ---- Кэш между запусками -----------------------------------------------------
+#
+# Портал государственный, доступ общий, а книга пересобирается по многу раз за
+# день: двести бортов на прогон — это двести лишних запросов к чужой системе,
+# отвечающих одно и то же. Кэш в памяти клиент уже держит; между запусками его
+# должно быть чем сохранить и чем поднять.
+
+def test_a_preloaded_answer_costs_no_request():
+    transport = FakeTransport({"10001": BUS_ANSWER})
+    client = PortalClient(transport, "кто", "пароль", sleep=lambda s: None)
+    first = client.lookup("10001", "2026-05-19", VehicleKind.BUS)
+
+    other = PortalClient(FakeTransport(), "кто", "пароль", sleep=lambda s: None)
+    other.preload(client.snapshot())
+    again = other.lookup("10001", "2026-05-19", VehicleKind.BUS)
+
+    assert again == first
+    assert not [c for c in other._transport.calls if not c[0].endswith("authenticate")]
+
+
+def test_the_snapshot_survives_json():
+    """Кэш ложится на диск, значит обязан пережить json без потерь."""
+    import json
+
+    transport = FakeTransport({"10001": BUS_ANSWER})
+    client = PortalClient(transport, "кто", "пароль", sleep=lambda s: None)
+    client.lookup("10001", "2026-05-19", VehicleKind.BUS)
+
+    revived = PortalClient(FakeTransport(), "кто", "пароль", sleep=lambda s: None)
+    revived.preload(json.loads(json.dumps(client.snapshot())))
+    assert revived.lookup("10001", "2026-05-19", VehicleKind.BUS).state_number == "А001АА198"
