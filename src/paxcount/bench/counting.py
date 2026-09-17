@@ -40,32 +40,47 @@ from .methods.ensemble import consensus_candidates
 # 0.66 высоты кузова, медиана — 1.12) и там же живёт их обоснование.
 _DEFAULT_ZONE = DoorSpec.model_fields["zone"].default
 FOOT_BAND = (_DEFAULT_ZONE[1], _DEFAULT_ZONE[3])
+# Боковой допуск зоны, долями ВЫСОТЫ ПОЛОСЫ НОГ. Единица измерения выбрана так,
+# чтобы допуск сам сжимался вместе с машиной, уехавшей вдаль: полоса — доля
+# кузова, а пиксель — нет. Значение выбрано развёрткой по боевым визитам:
+# 0 → 15 входов из 22, 0.25 → 18 без ложных, 0.5 → 20 с двумя ложными
+# (решение 060). Ложный счёт дороже пропуска — решение 055.
+DOOR_SIDE_MARGIN = 0.25
 
 
 def door_id(n_from_nose: int) -> str:
     return f"д{n_from_nose}"
 
 
-def door_specs(layout: DoorLayout) -> list[DoorSpec]:
+def door_specs(
+    layout: DoorLayout, side_margin: float = DOOR_SIDE_MARGIN,
+) -> list[DoorSpec]:
     """Зоны счёта по разметке визита — в абсолютных пикселях кадра.
 
     Абсолютные, а не доли рамки ТС: машина на стоянке неподвижна, рамка
     канонична на всё окно (запрет 3), и пересчитывать зону по покадровой рамке
     значило бы возвращать в счёт дрожание детектора.
+
+    ``side_margin`` расширяет зону ВБОК на долю высоты полосы ног. Вертикаль он
+    не трогает: она измерена по 7116 наблюдениям, а горизонталь — просто
+    размеченная ширина проёма, и на боевых записях это бывает 7 пикселей.
     """
     if layout.body_px is None:
         return []
     top = layout.body_px[1] + FOOT_BAND[0] * (layout.body_px[3] - layout.body_px[1])
     bottom = layout.body_px[1] + FOOT_BAND[1] * (layout.body_px[3] - layout.body_px[1])
+    margin = side_margin * (bottom - top)
     specs = []
     for door in layout.doors:
         if not door.in_frame or door.opening_px is None:
             continue
+        left = door.opening_px[0] - margin
+        right = door.opening_px[2] + margin
         specs.append(DoorSpec(
             door_id=door_id(door.n_from_nose), mode="zone", frame="absolute",
-            line_start={"x": door.opening_px[0], "y": top},
-            line_end={"x": door.opening_px[2], "y": bottom},
-            zone=(door.opening_px[0], top, door.opening_px[2], bottom),
+            line_start={"x": left, "y": top},
+            line_end={"x": right, "y": bottom},
+            zone=(left, top, right, bottom),
         ))
     return specs
 
@@ -130,9 +145,10 @@ def count_doors(
     data: TrackData,
     layout: DoorLayout,
     window: tuple[float, float],
+    side_margin: float = DOOR_SIDE_MARGIN,
 ) -> dict[str, tuple[int, int]]:
     """Вошло и вышло по каждой двери разметки. Счётчик — боевой, не свой."""
-    specs = door_specs(layout)
+    specs = door_specs(layout, side_margin)
     counts = {spec.door_id: (0, 0) for spec in specs}
     if not specs:
         return counts

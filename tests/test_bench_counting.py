@@ -19,7 +19,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from paxcount.bench.counting import (
-    count_doors, door_specs, layout_from_boxes, stop_window,
+    DOOR_SIDE_MARGIN, count_doors, door_specs, layout_from_boxes, stop_window,
 )
 from paxcount.bench.cases import Case
 from paxcount.bench.finders import ranked
@@ -65,7 +65,7 @@ def layout(openings) -> DoorLayout:
 
 def test_zone_is_the_foot_band_of_the_body_not_the_opening():
     """Запрет 4: считаем полосу ног. По горизонтали — проём, по вертикали — кузов."""
-    spec = door_specs(layout([(500.0, 380.0, 600.0, 700.0)] * 3))[0]
+    spec = door_specs(layout([(500.0, 380.0, 600.0, 700.0)] * 3), side_margin=0.0)[0]
     band = DoorSpec.model_fields["zone"].default  # оттуда и берётся полоса ног
     height = BODY[3] - BODY[1]
     assert spec.frame == "absolute" and spec.mode == "zone"
@@ -218,3 +218,57 @@ def test_variants_give_the_ceiling_and_every_method_by_name():
     assert out["owlv2"] is not None
     assert out["groundingdino"] is None, "метод не отвечал — это не ноль дверей"
     assert out["совет"] is None, "совет из одного мнения — не совет"
+
+
+# ---- Боковой допуск дверной зоны --------------------------------------------
+#
+# Вертикаль полосы ног измерена: 7116 наблюдений точки опоры относительно кузова.
+# Горизонталь не измерялась ни разу — это буквально размеченная ширина проёма.
+# На боевых записях проёмы бывают 7 и 12 пикселей (решение 048), и точка опоры
+# человека обязана попасть в колонку уже собственной ступни. Замер: на визите 4
+# восемь следов умирают в пределах ОДНОГО роста от зоны, при эталоне 7 входов и
+# трёх кандидатах.
+#
+# Допуск задаётся долей ВЫСОТЫ ПОЛОСЫ НОГ, а не пикселями: полоса — доля кузова,
+# значит она сама уменьшается вместе с машиной, уехавшей вдаль. Пиксельный
+# допуск на дальнем автобусе был бы вдвое шире, чем на ближнем, и означал бы
+# разное на разных визитах.
+
+def test_the_default_side_margin_is_the_measured_one():
+    """Умолчание — то значение, которое выбрано развёрткой, а не ноль.
+
+    Ноль означал бы «считаем ровно по размеченному проёму», и это уже проверено:
+    15 входов из 22. Развёртка по боевым визитам дала 0.25 — восемнадцать из
+    двадцати двух без единого ложного (решение 060). Число живёт в одном месте,
+    и тест сторожит, что умолчание — именно оно, а не забытая отладочная правка.
+    """
+    plain = door_specs(layout([(500.0, 380.0, 600.0, 700.0)]))[0]
+    band = plain.zone[3] - plain.zone[1]
+    assert DOOR_SIDE_MARGIN == 0.25
+    assert plain.zone[0] == pytest.approx(500.0 - DOOR_SIDE_MARGIN * band)
+    assert plain.zone[2] == pytest.approx(600.0 + DOOR_SIDE_MARGIN * band)
+
+
+def test_side_margin_widens_the_zone_sideways_only():
+    """Допуск — про горизонталь. Вертикаль измерена, её трогать нельзя."""
+    plain = door_specs(layout([(500.0, 380.0, 600.0, 700.0)]))[0]
+    wide = door_specs(layout([(500.0, 380.0, 600.0, 700.0)]), side_margin=0.5)[0]
+    band = plain.zone[3] - plain.zone[1]
+    assert wide.zone[0] == pytest.approx(500.0 - 0.5 * band)
+    assert wide.zone[2] == pytest.approx(600.0 + 0.5 * band)
+    assert (wide.zone[1], wide.zone[3]) == (plain.zone[1], plain.zone[3])
+
+
+def test_side_margin_shrinks_with_the_vehicle():
+    """Дальний автобус — мельче человек — уже допуск. В пикселях так не выйдет."""
+    near = door_specs(layout([(500.0, 380.0, 600.0, 700.0)]), side_margin=0.5)[0]
+    far = DoorLayout(
+        visit_key="2/2026-09-10T06:58:51/—", camera="2", size=VehicleSize.LARGE,
+        orientation="нос-справа", video=VIDEO, frame_idx=4956,
+        frame_size=(1920, 1080),
+        body_px=(BODY[0], BODY[1], BODY[2], BODY[1] + (BODY[3] - BODY[1]) / 2),
+        doors=[DoorLayoutEntry(n_from_nose=1, opening_px=(500.0, 380.0, 600.0, 700.0),
+                                in_frame=True)],
+    )
+    far_spec = door_specs(far, side_margin=0.5)[0]
+    assert (far_spec.zone[2] - 600.0) * 2 == pytest.approx(near.zone[2] - 600.0)

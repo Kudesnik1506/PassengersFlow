@@ -57,6 +57,8 @@ def main() -> int:
     parser.add_argument("--doors", type=Path, default=DATA_DIR / "truth" / "doors")
     parser.add_argument("--bench", type=Path, default=OUT_DIR / "bench_doors.json")
     parser.add_argument("--out", type=Path, default=OUT_DIR)
+    parser.add_argument("--side-margin", type=float, default=None,
+                        help="боковой допуск дверной зоны, долями высоты полосы ног")
     parser.add_argument("--refresh", action="store_true",
                         help="пересчитать детекцию, не брать кэш окон")
     args = parser.parse_args()
@@ -121,7 +123,9 @@ def main() -> int:
             if layout is None:
                 per_variant[variant] = None
                 continue
-            per_variant[variant] = count_doors(data, layout, window)
+            per_variant[variant] = count_doors(
+                data, layout, window,
+                *([] if args.side_margin is None else [args.side_margin]))
 
         visits.append({
             "№": number,
