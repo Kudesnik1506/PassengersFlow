@@ -96,3 +96,65 @@ def test_track_that_outlives_the_window_is_not_treated_as_cut_off_by_it():
     walk = [(550.0, 950.0 - 25.0 * i) for i in range(14)]
     standing = [(550.0, 600.0)] * 56
     assert count(path(walk + standing), arrival=0.5, departure=3.0), "событие есть"
+
+
+# ---- Салон считается по СВОЕЙ двери ------------------------------------------
+#
+# «Выше полосы ног» — признак салона, и порог у него брался один на весь кузов:
+# `min` по всем дверям. Пока полоса ног общая, это одно и то же число, и разницы
+# нет. Но замер показал, что общая полоса не достаёт до дверей с высоким порогом
+# (решение 062), а как только полосу разводят по дверям, `min` берёт САМУЮ
+# ВЫСОКУЮ границу и объявляет салоном лишь узкую щель под крышей: вошедший в
+# низкую дверь перестаёт считаться.
+#
+# Признак обязан спрашивать ту дверь, у которой человек стоит.
+
+TWO_DOORS = (
+    (500.0, 625.0, 600.0, 860.0),   # д1: полоса ниже
+    (200.0, 450.0, 300.0, 700.0),   # д2: полоса заметно выше
+)
+
+
+def two_door_specs() -> list[DoorSpec]:
+    return [
+        DoorSpec(door_id=f"д{i + 1}", mode="zone", frame="absolute",
+                  line_start={"x": z[0], "y": z[1]},
+                  line_end={"x": z[2], "y": z[3]}, zone=z)
+        for i, z in enumerate(TWO_DOORS)
+    ]
+
+
+def count_two(track: dict[int, tuple]):
+    rows = []
+    for i in range(81):
+        box = track.get(i)
+        rows.append(FrameTracks(
+            frame_idx=i, ts=i / FPS,
+            person_ids=np.array([7] if box else [], dtype=int),
+            person_boxes=np.array([box] if box else [], dtype=float).reshape(-1, 4),
+            person_conf=np.ones(1 if box else 0),
+            vehicle_ids=np.array([1], dtype=int),
+            vehicle_boxes=np.array([BODY], dtype=float), vehicle_names=["bus"],
+        ))
+    data = TrackData(video=VIDEO, width=1920, height=1080, fps=FPS, stride=1, frames=rows)
+    visit = VehicleVisit(video=VIDEO, visit_id=1, vehicle_track_id=-1,
+                          arrival_ts=0.5, departure_ts=8.0)
+    boxes = {f.frame_idx: np.asarray(BODY, dtype=float) for f in data.frames}
+    return count_zone(data, VideoConfig(video=VIDEO), [visit], {1: boxes},
+                       {1: two_door_specs()})
+
+
+def test_cabin_is_judged_by_the_door_the_person_stands_at():
+    """Вошёл в НИЗКУЮ дверь — судим по её полосе, а не по полосе соседней.
+
+    Человек проходит зону д1 (полоса 625..860) и останавливается на 600 px:
+    выше своей полосы и внутри кузова, то есть в салоне. Полоса д2 начинается с
+    450, и общий порог по `min` объявил бы салоном только выше 450 — вход
+    потерялся бы из-за двери, у которой человек не стоял.
+    """
+    assert [e.direction for e in count_two(rising(x_end=550.0))] == [Direction.IN]
+
+
+def test_cabin_test_still_refuses_the_pavement_behind_the_vehicle():
+    """Свой порог не значит «любой»: за рамкой кузова салона по-прежнему нет."""
+    assert count_two(rising(x_end=1000.0)) == [], "кузов кончается на 900 px"

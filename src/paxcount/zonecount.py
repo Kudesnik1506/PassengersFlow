@@ -140,14 +140,19 @@ def collect_lives(
             continue
         box_tuple = tuple(float(v) for v in bbox)
         zones = [(s.door_id, s.resolve_zone(box_tuple)) for s in zone_specs]
-        # Верх полосы ног общий у всех дверей одного кузова: ниже него человек
-        # стоит на земле, выше — уже в салоне.
-        zone_top = min(zone[1] for _, zone in zones) if zones else box_tuple[3]
         for tid, pbox in zip(f.person_ids, f.person_boxes):
             tid = int(tid)
             anchor = _anchor(pbox)
             hits = [door_id for door_id, zone in zones if _inside(anchor, zone)]
             in_zone = bool(hits)
+            # Порог салона спрашивается у СВОЕЙ двери — той, над чьей полосой
+            # человек стоит. Общий порог по всем дверям (раньше здесь был
+            # `min`) верен, только пока полосы всех дверей на одной высоте. На
+            # угловом ракурсе пороги дверей расходятся по кадру на сотни
+            # пикселей (решение 062), и общий порог объявил бы салоном узкую
+            # щель под крышей: вошедший в низкую дверь потерялся бы из-за
+            # двери, у которой он не стоял.
+            zone_top = _own_zone_top(anchor, zones, box_tuple)
             above = (not in_zone
                       and box_tuple[0] <= anchor[0] <= box_tuple[2]
                       and box_tuple[1] <= anchor[1] < zone_top)
@@ -384,6 +389,23 @@ def classify(
             return Direction.IN, "ушёл из зоны двери в салон"
         return None, f"вход отклонён: {why}"
     return None, "нет события"
+
+
+def _own_zone_top(anchor, zones, body) -> float:
+    """Верх полосы ног той двери, у которой человек стоит.
+
+    «Своя» дверь — та, чей горизонтальный створ накрывает точку опоры; если ни
+    одна не накрывает, берётся ближайшая по горизонтали. Без дверей порогом
+    салона служит низ кузова: тогда «выше полосы» вырождается в «внутри рамки».
+    """
+    if not zones:
+        return body[3]
+    covering = [zone[1] for _, zone in zones if zone[0] <= anchor[0] <= zone[2]]
+    if covering:
+        return max(covering)
+    return min(
+        zones, key=lambda z: abs((z[1][0] + z[1][2]) / 2 - anchor[0])
+    )[1][1]
 
 
 def _by_displacement(life: TrackLife) -> tuple[Direction | None, str]:
