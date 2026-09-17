@@ -91,3 +91,72 @@ def test_both_directories_are_ignored_by_git():
     rules = (root / ".gitignore").read_text(encoding="utf-8")
     assert "data/test_videos/*" in rules
     assert "data/prod_videos/*" in rules
+
+
+# ---- Боевые записи лежат в подпапках -----------------------------------------
+#
+# Оператор отдаёт смену не россыпью, а деревом: `видео 1/Камера 1/Утро/*.MP4`.
+# Плоский обход такого дерева не видит вовсе, и это не теоретическая придирка —
+# на 22 распакованных боевых файла `videos_in` вернула пустой список, а гейт
+# `pre-push` при этом отрапортовал «видео есть» по пятнадцати отладочным
+# роликам и признал набор проверенным. Ошибка, которая утверждает, что работа
+# сделана, дороже ошибки, которая падает.
+
+
+def test_video_in_subdirectory_is_found(two_sets):
+    """Съёмка приходит деревом «партия / камера / смена», а не плоской папкой."""
+    prod, _ = two_sets
+    nested = prod / "видео 1" / "Камера 1" / "Утро"
+    nested.mkdir(parents=True)
+    (nested / "a.mp4").touch()
+
+    assert videos_in(prod) == [nested / "a.mp4"]
+
+
+def test_uppercase_suffix_is_a_video(two_sets):
+    """Камера пишет `.MP4` заглавными. Регистр расширения — не признак."""
+    prod, _ = two_sets
+    (prod / "b.MP4").touch()
+
+    assert videos_in(prod) == [prod / "b.MP4"]
+
+
+def test_appledouble_companions_are_not_videos(two_sets):
+    """`._имя.mp4` — служебный спутник macOS на внешнем томе, а не запись.
+
+    Проект лежит на `/Volumes`, где такие файлы заводятся сами. Рекурсивный
+    обход подберёт их наравне с записями, и каждый станет «видео», которое
+    не открывается.
+    """
+    prod, _ = two_sets
+    (prod / "._a.mp4").touch()
+    (prod / "a.mp4").touch()
+
+    assert videos_in(prod) == [prod / "a.mp4"]
+
+
+def test_hook_and_settings_agree_on_what_a_video_is():
+    """Гейт и конвейер обязаны искать одно и то же.
+
+    `pre-push` обходит дерево своим `find` — он должен работать на свежем
+    клоне без установленного проекта, поэтому вызвать `videos_in` не может.
+    Цена расхождения уже заплачена: `find -name '*.mp4'` не находил `.MP4`,
+    и боевые записи были невидимы для гейта, пока он бодро сообщал об успехе.
+    """
+    import re
+    from pathlib import Path
+
+    from paxcount.settings import VIDEO_SUFFIXES
+
+    hook = (Path(__file__).resolve().parents[1] / "tools/hooks/pre-push").read_text(
+        encoding="utf-8"
+    )
+    flags = set(re.findall(r"-(i?name) '\*(\.\w+)'", hook))
+    assert flags, "в хуке не нашлось поиска видео по расширениям"
+
+    assert {suffix for _, suffix in flags} == set(VIDEO_SUFFIXES), (
+        "список расширений в хуке разошёлся с VIDEO_SUFFIXES"
+    )
+    assert {flag for flag, _ in flags} == {"iname"}, (
+        "хук обязан искать без учёта регистра: камера пишет .MP4"
+    )
