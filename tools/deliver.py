@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 from collections import Counter
@@ -61,6 +62,8 @@ from paxcount.delivery.sequence import (  # noqa: E402
 )
 from paxcount.delivery.coverage import gaps_of_cameras, with_footage  # noqa: E402
 from paxcount.delivery.timeline import CameraTrack, parse_slot  # noqa: E402
+from paxcount.delivery.visibility import Sighting, code_at  # noqa: E402
+from paxcount import cameras  # noqa: E402
 from paxcount.delivery.validate import validate  # noqa: E402
 from paxcount.delivery.xlsx import BLANK_SHEET, sheet_cells, write_rows  # noqa: E402
 from paxcount import portal  # noqa: E402
@@ -160,6 +163,43 @@ def reference_slots(stop: str, camera: str = "2") -> list:
 # двери), К1 последней — она в счёте не участвует и нужна только как свидетель
 # там, где остальные молчали.
 CAMERA_ORDER = ("2", "3", "1")
+
+
+def sightings_for(stop: str) -> dict[str, list[Sighting]]:
+    """Стоянки, найденные детекцией, по камерам. Пусто — таблицы ещё нет.
+
+    Таблица считается отдельно (`tools/sightings.py`): она стоит часов детекции
+    по всей смене, и пересобирать её на каждую сборку книги нельзя. Нет
+    таблицы — просто не будет кодов по обрезу кузова, книга соберётся без них.
+    """
+    found: dict[str, list[Sighting]] = {}
+    folder = OUT_DIR / "sightings"
+    if not folder.is_dir():
+        return found
+    for path in sorted(folder.glob(f"{stop}-*.csv")):
+        with path.open(encoding="utf-8", newline="") as f:
+            for row in csv.DictReader(f):
+                found.setdefault(row["camera"], []).append(Sighting(
+                    start=datetime.fromisoformat(row["start"]),
+                    end=datetime.fromisoformat(row["end"]),
+                    box=(float(row["x0"]), float(row["y0"]),
+                          float(row["x1"]), float(row["y1"])),
+                    frame_size=(int(row["width"]), int(row["height"])),
+                ))
+    return found
+
+
+def with_visibility(row, sightings: dict[str, list[Sighting]], noses: dict):
+    """Код таблицы 2 по обрезу кузова — там, где своего кода ещё нет.
+
+    Ручная разметка главнее: она видит дверь, закрытую столбом или соседней
+    машиной, а обрез кадра такого не ловит вовсе (решение 081).
+    """
+    if row.comment is not None or not row.camera or row.camera_ts is None:
+        return row
+    code = code_at(row.camera_ts, sightings.get(row.camera, []),
+                    noses.get(row.camera))
+    return row if code is None else row.model_copy(update={"comment": code})
 
 
 def camera_tracks(stop: str) -> list[CameraTrack]:
@@ -312,6 +352,19 @@ def main() -> int:
                 for e in entries]
     if args.portal:
         entries = ask_the_portal(entries, args.stop)
+
+    # Код таблицы 2 по обрезу кузова — на строках, где ручной разметки нет.
+    seen = sightings_for(args.stop)
+    if seen:
+        motions = cameras.load(cameras.path_for(args.stop, DATA_DIR / "cameras"))
+        noses = {c: cameras.nose_for(args.stop, c, motions) for c in seen}
+        silent = [c for c, n in noses.items() if n is None]
+        if silent:
+            console.print(f"[yellow]камеры {', '.join(sorted(silent))}: направление "
+                           "движения не задано, код по обрезу кузова не ставится[/yellow]")
+        entries = [replace(e, row=with_visibility(e.row, seen, noses)) for e in entries]
+        console.print("стоянок из детекции: "
+                       + ", ".join(f"К{c} {len(v)}" for c, v in sorted(seen.items())))
 
     rows = [e.row for e in entries]
 

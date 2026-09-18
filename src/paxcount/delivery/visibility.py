@@ -1,0 +1,62 @@
+"""Какой визит относится к строке книги — и, значит, по какой рамке судить.
+
+`reconcile.clipped_code` отвечает на вопрос «виден ли кузов целиком», имея
+рамку. Здесь решается предыдущий: чья это рамка. Разметка есть на шесть визитов
+из трёхсот, детекция — на всю смену, и связать строку с визитом можно только по
+времени: бортового номера детектор не читает (решение 003).
+
+Допуски замерены, а не выбраны. По 280 строкам К2: момент строки лежит ВНУТРИ
+визита в 149 случаях; из остальных 86 стоят после него (медиана 18 с) и 45
+перед (медиана 47 с). Асимметрия не случайна — оператор жмёт кнопку, когда
+машина уже отходит, поэтому допуск после стоянки шире, чем до неё.
+
+Промах здесь дороже молчания: чужая рамка даст правдоподобный и неверный код в
+отчёте заказчику. Поэтому на большом отрыве кода нет вовсе — машины идут через
+80 с, и «ближайший визит» на такой дистанции это уже соседняя стоянка.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+
+from .reconcile import clipped_code
+
+# Замерено (см. докстринг): столько строка может отстоять от края стоянки и всё
+# ещё относиться к ней. Допуск после шире — оператор жмёт вдогонку.
+BEFORE_S = 10.0
+AFTER_S = 20.0
+
+
+@dataclass(frozen=True)
+class Sighting:
+    """Стоянка, найденная детекцией: когда, какой рамкой и в каком кадре.
+
+    `box` — канонический bbox по окну стоянки, а не покадровый (запрет 3):
+    покадровый дрожит, и обрез края кадра то появлялся бы, то исчезал.
+    """
+
+    start: datetime
+    end: datetime
+    box: tuple[float, float, float, float]
+    frame_size: tuple[int, int]
+
+    def covers(self, moment: datetime) -> bool:
+        return (self.start - timedelta(seconds=BEFORE_S) <= moment
+                <= self.end + timedelta(seconds=AFTER_S))
+
+
+def code_at(moment: datetime, sightings: list[Sighting],
+             orientation: str | None) -> int | None:
+    """Код таблицы 2 для строки, стоящей в этот момент. `None` — сказать нечего.
+
+    Визит, накрывающий момент СОБСТВЕННОЙ стоянкой, важнее того, чей край
+    ближе: иначе строка, попавшая в конец долгой стоянки, ушла бы к следующей
+    машине, вставшей через секунду.
+    """
+    inside = [s for s in sightings if s.start <= moment <= s.end]
+    near = inside or [s for s in sightings if s.covers(moment)]
+    if not near:
+        return None
+    chosen = min(near, key=lambda s: abs((s.start - moment).total_seconds()))
+    return clipped_code(chosen.box, chosen.frame_size, orientation)[0]
