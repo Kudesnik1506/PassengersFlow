@@ -136,7 +136,7 @@ def test_our_own_columns_are_not_carried_over_from_the_last_book():
     расхождения вернулись из прошлой книги в 292 строки из 295 и остались бы
     там навсегда.
     """
-    from paxcount.delivery.fill import carried_over
+    from paxcount.delivery.manual import carried_over
 
     ours = row(hours=7, minutes=2, board_number="1596")
     was = [{"C": "7", "D": "2", "G": "1596",

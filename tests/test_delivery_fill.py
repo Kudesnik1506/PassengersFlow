@@ -301,7 +301,7 @@ def test_the_sheet_size_counts_our_columns_too(tmp_path):
 
 
 def test_a_cell_we_leave_empty_is_carried_over(tmp_path):
-    from paxcount.delivery.fill import carried_over
+    from paxcount.delivery.manual import carried_over
 
     previous = [{"C": "6", "D": "56", "G": "А000АА00", "H": "26", "I": "Б"}]
     kept = carried_over(previous, [row(hours=6, minutes=56, route="26",
@@ -311,7 +311,7 @@ def test_a_cell_we_leave_empty_is_carried_over(tmp_path):
 
 def test_a_cell_we_fill_ourselves_is_not_carried_over(tmp_path):
     """Наше значение главнее: иначе правка данных никогда не доедет до книги."""
-    from paxcount.delivery.fill import carried_over
+    from paxcount.delivery.manual import carried_over
 
     previous = [{"C": "6", "D": "56", "G": "А000АА00", "H": "64", "I": "Б"}]
     kept = carried_over(previous, [row(hours=6, minutes=56, route="26",
@@ -321,7 +321,7 @@ def test_a_cell_we_fill_ourselves_is_not_carried_over(tmp_path):
 
 def test_carrying_follows_the_row_that_moved(tmp_path):
     """Перед строкой вписали машину — ручная клетка едет за СВОЕЙ строкой."""
-    from paxcount.delivery.fill import carried_over
+    from paxcount.delivery.manual import carried_over
 
     previous = [{"C": "6", "D": "56", "G": "А000АА00", "H": "26", "I": "Б"}]
     rows = [row(hours=6, minutes=50, route="50", state_number="А001АА00"),
@@ -331,7 +331,7 @@ def test_carrying_follows_the_row_that_moved(tmp_path):
 
 def test_a_row_that_vanished_carries_nothing(tmp_path):
     """Строки с такими приметами в новой книге нет — переносить некуда."""
-    from paxcount.delivery.fill import carried_over
+    from paxcount.delivery.manual import carried_over
 
     previous = [{"C": "7", "D": "30", "G": "А777АА00", "H": "99", "I": "Б"}]
     assert carried_over(previous, [row(hours=6, minutes=56, route="26",
@@ -355,7 +355,8 @@ def test_the_carry_covers_every_column_not_just_occupancy():
     не переносятся. В книге заказчика их нет вовсе, пока мы их не завели, и
     пустота в них — наше «сказать нечего», а не чужая работа.
     """
-    from paxcount.delivery.fill import COLUMNS, EXTRA_COLUMNS, carried_over
+    from paxcount.delivery.fill import COLUMNS, EXTRA_COLUMNS
+    from paxcount.delivery.manual import carried_over
 
     ours = row(hours=6, minutes=56, route="26", state_number="А000АА00",
                 alighted=None, boarded=None, video="", operator="")
@@ -377,7 +378,7 @@ def test_rows_of_the_previous_book_that_found_no_place_are_named():
     ровно так же, как при слепой перезаписи, только теперь незаметно ещё и для
     нас. Поэтому такие строки называются поимённо.
     """
-    from paxcount.delivery.fill import orphaned
+    from paxcount.delivery.manual import orphaned
 
     previous = [{"C": "6", "D": "56", "G": "38099", "H": "26", "I": "Б"},
                  {"C": "7", "D": "02", "G": "А000АА00", "H": "50"}]
@@ -393,7 +394,7 @@ def test_a_previous_row_without_content_is_not_worth_naming():
     Данными считается всё, что стоит вне примет: отличить ручной ввод от
     перенесённого у СГИНУВШЕЙ строки нечем, и осторожность тут дешевле потери.
     """
-    from paxcount.delivery.fill import orphaned
+    from paxcount.delivery.manual import orphaned
 
     previous = [{"C": "6", "D": "56", "G": "38099"}]
     assert orphaned(previous, [row(hours=7, minutes=2)]) == []
@@ -406,7 +407,7 @@ def test_the_row_key_ignores_columns_the_customer_may_fill():
     перестала узнаваться по приметам, включавшим маршрут. То есть ровно тот
     ручной ввод, ради которого перенос и заведён, ломал сам перенос.
     """
-    from paxcount.delivery.fill import carried_over
+    from paxcount.delivery.manual import carried_over
 
     previous = [{"C": "6", "D": "59", "G": "А000АА00", "H": "225", "I": "А"}]
     ours = row(hours=6, minutes=59, route=None, state_number="А000АА00")
@@ -463,3 +464,16 @@ def test_the_libreoffice_lock_counts_too(tmp_path):
     book.write_bytes(b"")
     (tmp_path / ".~lock.Книга.xlsx#").write_bytes(b"")
     assert opened_by(book) == ".~lock.Книга.xlsx#"
+
+
+def test_a_customers_edit_is_written_over_our_value(tmp_path):
+    """Правка заказчика ложится в клетку поверх нашего значения.
+
+    Прежде `keep` спасал только пустую клетку — этого хватало, пока главным
+    было наше число. Заказчик решил иначе: книгу ведёт он, и в клетке, которую
+    он тронул, остаётся его значение, а наше уходит спором в графу S.
+    """
+    book = fill_template(template(tmp_path / "шаблон.xlsx"),
+                          [row(route="26")], tmp_path / "книга.xlsx",
+                          keep={2: {"H": "225"}})
+    assert cells(book)["H"][1] == "225"

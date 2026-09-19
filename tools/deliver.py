@@ -46,9 +46,8 @@ from paxcount.delivery.assemble import (  # noqa: E402
 from paxcount.delivery.model import VehicleKind  # noqa: E402
 from paxcount.delivery.reconcile import VisitFacts  # noqa: E402
 from paxcount.delivery.agreement import Agreement, agree  # noqa: E402
-from paxcount.delivery.fill import (  # noqa: E402
-    carried_over, fill_template, opened_by, orphaned,
-)
+from paxcount.delivery import manual  # noqa: E402
+from paxcount.delivery.fill import fill_template, opened_by  # noqa: E402
 from paxcount.delivery.marking import (  # noqa: E402
     marks_for, marks_for_duplicate, marks_for_our_measurement, marks_for_repair,
     marks_for_shifted_time,
@@ -316,6 +315,9 @@ def main() -> int:
     parser.add_argument("--book", type=Path, default=None,
                          help="книга заказчика: читается ради ручного ввода и "
                                "перезаписывается ею же — копировать руками нельзя")
+    parser.add_argument("--drop-manual", nargs="*", default=[], metavar="КЛЕТКА",
+                         help="снять закрепление с правки заказчика и пустить туда "
+                               "наше значение: --drop-manual H4 M6")
     parser.add_argument("--accept-losses", action="store_true",
                          help="писать в книгу заказчика, даже если строки прошлой "
                                "книги не сопоставлены: ручной ввод в них будет "
@@ -525,22 +527,54 @@ def main() -> int:
 
     args.out.mkdir(parents=True, exist_ok=True)
     name = book_filename(rows, group=args.group, stop=args.stop)
-    # Клетки, которые заказчик заполнял руками. Наша сборка их не пишет —
-    # значит и стереть не вправе: наполненность по прибытию мы не считаем
-    # вовсе, а в книге она стоит.
-    keep: dict = {}
-    lost: list = []
-    previous = args.book if args.book is not None else args.out / name
+
+    # Книгу ведёт заказчик. Всё, чего он коснулся, главнее нашего расчёта: мы
+    # не правим, а уточняем — наше несогласие уходит в графу расхождений.
+    #
+    # Отличить его правку от нашего же прошлого значения по одной книге нельзя,
+    # поэтому она ищется разницей с эталоном — копией того, что записала прошлая
+    # сборка (`out/<имя>`). Найденная правка закрепляется в реестре: после
+    # записи книга с копией сравняются, разницы не останется, а помнить надо
+    # навсегда.
+    register = args.out / f"правки-{args.group}-{args.stop}.json"
+    baseline = args.out / name
+    edits = manual.load(register)
+    previous = args.book if args.book is not None else baseline
     if previous.exists():
         was = sheet_cells(previous, BLANK_SHEET)[1:]
-        keep = carried_over(was, rows)
-        lost = orphaned(was, rows)
-        cells = sum(len(v) for v in keep.values())
-        console.print(f"перенесено из {previous.name}: {cells} клеток ручного "
-                       f"ввода в {len(keep)} строках")
-    for cell in lost:
-        console.print("[red]строка прошлой книги не нашла места: "
-                       + ", ".join(f"{k}={v}" for k, v in sorted(cell.items())) + "[/red]")
+        if previous != baseline and baseline.exists():
+            diff = manual.found(was, sheet_cells(baseline, BLANK_SHEET)[1:])
+            edits = manual.merged(edits, diff.edits)
+            for column, count in sorted(diff.spoiled.items()):
+                console.print(f"[dim]графа {column}: в {count} клетках значение "
+                               "сохранено чужим редактором не в своём виде — "
+                               "восстановлено, правкой не считается[/dim]")
+            if diff.unknown:
+                console.print(f"[red]строк книги нет в копии прошлой сборки: "
+                               f"{len(diff.unknown)} — правки в них не распознать[/red]")
+        else:
+            # Копии прошлой сборки нет: в графах, которые заполняем мы, правку
+            # распознать нечем. Пустые у нас клетки заведомо его — переносим их.
+            edits = manual.merged(edits, manual.carried(was, rows))
+            if not baseline.exists():
+                console.print("[yellow]копии прошлой сборки нет: правки заказчика в "
+                               "наших графах не распознаются, переносится только "
+                               "то, чего мы не заполняем[/yellow]")
+    try:
+        edits = manual.without(edits, args.drop_manual, rows)
+    except LookupError as why:
+        console.print(f"[red]{why}[/red]")
+        return 2
+    manual.save(register, edits)
+    done = manual.applied(rows, edits)
+    rows, keep, lost = done.rows, done.values, done.lost
+    highlight = manual.unmarked(highlight, keep)
+    if edits:
+        console.print(f"правок заказчика: {len(edits)} в {len(keep)} строках — "
+                       f"они главнее нашего расчёта ({register.name})")
+    for gone in lost:
+        console.print(f"[red]правка заказчика потеряла строку: графа {gone.column}"
+                       f" = {gone.value or 'пусто'}, приметы {'/'.join(gone.key)}[/red]")
 
     targets = []
     ours = args.out / name
