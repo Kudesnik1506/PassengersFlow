@@ -52,9 +52,20 @@
   .bar { display:flex; gap:6px; align-items:center; padding:8px;
          border-top:1px solid var(--line); background:var(--panel);
          flex-wrap:wrap; }
-  /* Полоса просмотренного: на проигрывании по ней видно ход, не читая цифр. */
-  #seen { height:4px; background:var(--line); flex:none; }
-  #seenfill { height:100%; width:0; background:var(--accent); transition:width .12s linear; }
+  /* Полоса записи: показывает ход и принимает щелчок — в точку записи иначе
+     не попасть, полей «кадр» и «время» на экране больше нет. Высота выбрана
+     под попадание мышью, а не под вид: в 4 px не попасть. */
+  #seen { height:10px; background:var(--line); flex:none; cursor:pointer;
+          position:relative; }
+  #seen:hover { background:#333a46; }
+  #seenfill { height:100%; width:0; background:var(--accent); pointer-events:none;
+              transition:width .12s linear; }
+  /* Засечка под курсором: щёлкают по месту, а видят время до щелчка. */
+  #seenhint { position:absolute; bottom:14px; transform:translateX(-50%);
+              background:var(--panel); border:1px solid var(--line);
+              border-radius:5px; padding:2px 6px; font-size:11px;
+              color:var(--ink); pointer-events:none; display:none;
+              white-space:nowrap; font-variant-numeric:tabular-nums; }
   #progress { font-variant-numeric:tabular-nums; }
   /* Заголовок камеры — кнопка: список трёх камер за смену длиннее экрана. */
   aside h2.group { cursor:pointer; user-select:none; display:flex;
@@ -187,7 +198,9 @@
     <span style="flex:1"></span>
     <span class="times" id="clock">—</span>
   </div>
-  <div id="seen" title="Сколько записи позади"><div id="seenfill"></div></div>
+  <div id="seen" title="Щёлкните по записи, чтобы попасть в это место">
+    <div id="seenfill"></div><div id="seenhint"></div>
+  </div>
   <div class="bar" id="playbar">
     <button data-play="-30" title="Назад в 30 раз быстрее">◀◀ 30</button>
     <button data-play="-10" title="Назад в 10 раз быстрее">◀ 10</button>
@@ -848,6 +861,62 @@ function playAt(speed) {
 document.querySelectorAll('[data-play]').forEach(b =>
   b.onclick = () => playAt(+b.dataset.play));
 $('pause').onclick = stopPlaying;
+
+// ---- Переход по полосе записи ----------------------------------------------
+// Проигрывание проносит мимо: машину увидели, а нужный момент остался позади,
+// и вернуться на пять минут нечем. Полоса, которая показывает позицию, её же
+// и задаёт — щелчком или протяжкой.
+
+function partAt(ev) {
+  const r = $('seen').getBoundingClientRect();
+  return Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
+}
+
+function frameAt(ev) {
+  return Math.round(partAt(ev) * (S.file.frames - 1));
+}
+
+function hms(seconds) {
+  const m = Math.floor(seconds / 60), s = Math.round(seconds) % 60;
+  return m + ':' + String(s).padStart(2, '0');
+}
+
+let seeking = false, seekBusy = false;
+
+// На протяжке кадры запрашиваются подряд, и без этого сторожа очередь запросов
+// растёт быстрее, чем разгребается: отпустил мышь — картинка ещё догоняет.
+async function seekTo(ev) {
+  if (seekBusy) return;
+  seekBusy = true;
+  await showFrame(frameAt(ev), true);
+  seekBusy = false;
+}
+
+$('seen').onmousedown = ev => {
+  if (!S.file) return;
+  stopPlaying();
+  seeking = true;
+  seekTo(ev);
+};
+
+$('seen').onmousemove = ev => {
+  if (!S.file) return;
+  const hint = $('seenhint');
+  hint.style.display = 'block';
+  hint.style.left = (partAt(ev) * 100) + '%';
+  hint.textContent = hms(frameAt(ev) / S.file.fps);
+  if (seeking) seekTo(ev);
+};
+
+$('seen').onmouseleave = () => { $('seenhint').style.display = 'none'; };
+
+// Отпустить мышь могут где угодно, поэтому слушает окно, а не полоса. Кадр
+// перезапрашивается целиком: по ужатому размечать нельзя.
+window.addEventListener('mouseup', () => {
+  if (!seeking) return;
+  seeking = false;
+  showFrame(S.frame);
+});
 // ---- Панели ----------------------------------------------------------------
 // Сворачиваются обе боковые панели: кадр разглядывают подолгу и с увеличением,
 // и 560 px, занятые списками, там нужнее под сам кадр. Состояние держится между

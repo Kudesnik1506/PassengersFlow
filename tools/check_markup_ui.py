@@ -68,6 +68,8 @@ def check(page, size) -> list[str]:
         page.keyboard.press("Escape")
         page.wait_for_timeout(250)
 
+    bad += check_seek(page, size)
+
     # Сворачиваем заново перед проверкой памяти: мастер разворачивает панели
     # сам, когда шаг показывает на свёрнутое, и это правильно — проверять
     # память после него значило бы проверять не то.
@@ -80,6 +82,45 @@ def check(page, size) -> list[str]:
     columns = page.evaluate("getComputedStyle(document.body).gridTemplateColumns")
     if not columns.startswith("30px") or not columns.endswith("30px"):
         bad.append(f"{size}: свёрнутые панели не пережили перезагрузку ({columns})")
+    return bad
+
+
+def check_seek(page, size) -> list[str]:
+    """Полоса записи переносит в точку, по которой щёлкнули.
+
+    Проигрывание нашло машину не там, где ждали, — нужно вернуться на пять
+    минут назад, и перематывать эти пять минут нечем: поля «кадр» и «время»
+    убраны вместе с нижней плашкой. Поэтому полоса просмотренного не только
+    показывает позицию, но и принимает щелчок.
+
+    Проверяется живым браузером, а не тестом: попадание мышью в полосу
+    высотой в несколько пикселей — свойство вёрстки, и юнит-тест его не видит.
+    """
+    bad: list[str] = []
+    page.click("aside .file")           # первый файл списка
+    page.wait_for_timeout(2500)
+    if not page.evaluate("!!S.file"):
+        return [f"{size}: файл не открылся, проверить переход по полосе нечем"]
+
+    box = page.evaluate(
+        "() => { const r = document.getElementById('seen').getBoundingClientRect();"
+        " return [r.left, r.top, r.width, r.height]; }"
+    )
+    left, top, width, height = box
+    if height < 6:
+        bad.append(f"{size}: полоса записи высотой {height} px — в неё не попасть мышью")
+
+    page.mouse.click(left + width * 0.75, top + height / 2)
+    page.wait_for_timeout(1200)
+    part = page.evaluate("S.frame / (S.file.frames - 1)")
+    if not 0.70 < part < 0.80:
+        bad.append(f"{size}: щелчок по трём четвертям полосы привёл на {part:.0%} записи")
+
+    page.mouse.click(left + width * 0.1, top + height / 2)
+    page.wait_for_timeout(1200)
+    part = page.evaluate("S.frame / (S.file.frames - 1)")
+    if not 0.05 < part < 0.15:
+        bad.append(f"{size}: щелчок по десятой доле полосы привёл на {part:.0%} записи")
     return bad
 
 
