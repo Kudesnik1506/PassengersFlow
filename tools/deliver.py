@@ -51,6 +51,7 @@ from paxcount.delivery.fill import (  # noqa: E402
 )
 from paxcount.delivery.marking import (  # noqa: E402
     marks_for, marks_for_duplicate, marks_for_our_measurement, marks_for_repair,
+    marks_for_shifted_time,
 )
 from paxcount.delivery.model import Occupancy  # noqa: E402
 from paxcount.delivery.plates import with_plate  # noqa: E402
@@ -62,9 +63,13 @@ from paxcount.delivery.sequence import (  # noqa: E402
 )
 from paxcount.delivery.coverage import gaps_of_cameras, with_footage  # noqa: E402
 from paxcount.delivery.timeline import CameraTrack, parse_slot  # noqa: E402
-from paxcount.delivery.visibility import Sighting, code_at  # noqa: E402
+from paxcount.delivery.visibility import Sighting, sighting_at  # noqa: E402
+from paxcount.delivery.inputs import Inputs, decoder_name, missing  # noqa: E402
+from paxcount.delivery.review import with_checks  # noqa: E402
+from paxcount.delivery.reconcile import UNKNOWN_ROUTE, with_unnamed_route  # noqa: E402
+from paxcount.env import values as env_values  # noqa: E402
 from paxcount import cameras  # noqa: E402
-from paxcount.delivery.validate import validate  # noqa: E402
+from paxcount.delivery.validate import UNKNOWN_ROUTE_LIMIT, validate  # noqa: E402
 from paxcount.delivery.xlsx import BLANK_SHEET, sheet_cells, write_rows  # noqa: E402
 from paxcount import portal  # noqa: E402
 from paxcount.settings import DATA_DIR, OUT_DIR  # noqa: E402
@@ -189,17 +194,48 @@ def sightings_for(stop: str) -> dict[str, list[Sighting]]:
     return found
 
 
-def with_visibility(row, sightings: dict[str, list[Sighting]], noses: dict):
-    """Код таблицы 2 по обрезу кузова — там, где своего кода ещё нет.
+def edge_answers(stop: str) -> dict[tuple[str, str], dict]:
+    """Ответы счёта дверей по кадру: код таблицы 2 и число дверей у машины.
+
+    Считаются отдельно (`tools/edgedoors.py`): один кадр на стоянку уходит к
+    модели, и повторять это на каждой сборке книги нельзя. Нет таблицы — книга
+    соберётся без кодов по кадру, как и без сверки размера по дверям.
+
+    Ключ — камера и начало стоянки: бортового номера детектор не читает
+    (решение 003), и связать ответ со строкой можно только через визит.
+    """
+    path = OUT_DIR / "edge-doors" / "коды.csv"
+    if not path.exists():
+        return {}
+    found: dict[tuple[str, str], dict] = {}
+    with path.open(encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            found[(row["camera"], row["visit_start"])] = row
+    return found
+
+
+def with_edge_code(row, sightings: dict[str, list[Sighting]], answers: dict):
+    """Код таблицы 2 по числу дверей в кадре — там, где своего кода ещё нет.
 
     Ручная разметка главнее: она видит дверь, закрытую столбом или соседней
-    машиной, а обрез кадра такого не ловит вовсе (решение 081).
+    машиной, а кадр такого не ловит вовсе (решение 082).
+
+    Заодно строка получает число дверей, насчитанное моделью, — им
+    перепроверяется размер ТС оператора (`review.with_checks`).
     """
-    if row.comment is not None or not row.camera or row.camera_ts is None:
-        return row
-    code = code_at(row.camera_ts, sightings.get(row.camera, []),
-                    noses.get(row.camera))
-    return row if code is None else row.model_copy(update={"comment": code})
+    if not row.camera or row.camera_ts is None:
+        return row, None
+    seen = sighting_at(row.camera_ts, sightings.get(row.camera, []))
+    if seen is None:
+        return row, None
+    answer = answers.get((row.camera, seen.start.isoformat()))
+    if answer is None:
+        return row, None
+    doors = int(answer["дверей_всего"]) if answer["дверей_всего"] else None
+    code = int(answer["код"]) if answer["код"] else None
+    if row.comment is not None or code is None:
+        return row, doors
+    return row.model_copy(update={"comment": code}), doors
 
 
 def camera_tracks(stop: str) -> list[CameraTrack]:
@@ -212,14 +248,14 @@ def camera_tracks(stop: str) -> list[CameraTrack]:
     отправить проверяющего не туда.
     """
     records = clocks.load(DATA_DIR / "clocks" / f"{stop}.csv")
-    offsets = {r.camera: r.offset_to_k2_s for r in records}
+    offsets = {r.camera: r.offset_to_reference_s for r in records}
     out = []
     for camera in CAMERA_ORDER:
         if camera not in offsets:
             console.print(f"[yellow]камера {camera}: поправки часов нет, "
                            "в книгу её файлы не попадут[/yellow]")
             continue
-        out.append(CameraTrack(camera=camera, offset_to_k2_s=offsets[camera],
+        out.append(CameraTrack(camera=camera, offset_to_reference_s=offsets[camera],
                                 slots=reference_slots(stop, camera)))
     return out
 
@@ -280,8 +316,34 @@ def main() -> int:
     parser.add_argument("--book", type=Path, default=None,
                          help="книга заказчика: читается ради ручного ввода и "
                                "перезаписывается ею же — копировать руками нельзя")
+    parser.add_argument("--accept-losses", action="store_true",
+                         help="писать в книгу заказчика, даже если строки прошлой "
+                               "книги не сопоставлены: ручной ввод в них будет "
+                               "потерян, и это решает заказчик, а не сборка")
+    parser.add_argument("--videos", type=Path, default=DATA_DIR / "prod_videos",
+                         help="съёмка оператора: по ней идут детекция, часы и графа файла")
     parser.add_argument("--out", type=Path, default=OUT_DIR)
     args = parser.parse_args()
+
+    # Входные данные спрашиваются, а не угадываются (решение 083). Отказ
+    # называет всё недостающее сразу и словами заказчика: читать его будет
+    # человек с папкой работ, а не разбирающий ключи командной строки.
+    motions = cameras.load(cameras.path_for(args.stop, DATA_DIR / "cameras"))
+    known = tuple(sorted(c for c in COUNTING_CAMERAS
+                          if cameras.motion_for(args.stop, c, motions)))
+    gaps = missing(Inputs(group=args.group, stop=args.stop,
+                           operator_export=args.operator_export, videos=args.videos,
+                           template=args.template, cameras=known))
+    if gaps:
+        console.print("[red]сборка не начата — не хватает данных:[/red]")
+        for gap in gaps:
+            console.print(f"  [red]·[/red] {gap}")
+        return 2
+    try:
+        args.operator = decoder_name(args.operator, env_values())
+    except ValueError as why:
+        console.print(f"[red]{why}[/red]")
+        return 2
 
     visits = collect(args.doors, args.stop)
     if not visits:
@@ -353,18 +415,36 @@ def main() -> int:
     if args.portal:
         entries = ask_the_portal(entries, args.stop)
 
-    # Код таблицы 2 по обрезу кузова — на строках, где ручной разметки нет.
+    # Код таблицы 2 по числу дверей в кадре — на строках, где разметки нет.
+    # Оттуда же берётся число дверей, которым перепроверяется размер ТС.
     seen = sightings_for(args.stop)
+    answers = edge_answers(args.stop)
+    doors_by_row: dict[int, int | None] = {}
     if seen:
-        motions = cameras.load(cameras.path_for(args.stop, DATA_DIR / "cameras"))
-        noses = {c: cameras.nose_for(args.stop, c, motions) for c in seen}
-        silent = [c for c, n in noses.items() if n is None]
-        if silent:
-            console.print(f"[yellow]камеры {', '.join(sorted(silent))}: направление "
-                           "движения не задано, код по обрезу кузова не ставится[/yellow]")
-        entries = [replace(e, row=with_visibility(e.row, seen, noses)) for e in entries]
         console.print("стоянок из детекции: "
-                       + ", ".join(f"К{c} {len(v)}" for c, v in sorted(seen.items())))
+                       + ", ".join(f"К{c} {len(v)}" for c, v in sorted(seen.items()))
+                       + f"; ответов по дверям {len(answers)}")
+        fresh = []
+        for n, e in enumerate(entries):
+            row, doors = with_edge_code(e.row, seen, answers)
+            doors_by_row[n] = doors
+            fresh.append(replace(e, row=row))
+        entries = fresh
+
+    # Перепроверка оператора: пара «вид + размер» по таблице 3 и число дверей
+    # против размера. Ничего не правим — только называем (решение 087).
+    entries = [replace(e, row=with_checks(e.row, doors_by_row.get(n)))
+                for n, e in enumerate(entries)]
+
+    # Пункт 17 инструкции: маршрут не виден — «N/A», номер ТС в комментарий.
+    entries = [replace(e, row=with_unnamed_route(e.row)) for e in entries]
+    unnamed = sum(1 for e in entries if e.row.route == UNKNOWN_ROUTE)
+    if unnamed:
+        share = unnamed / len(entries)
+        colour = "red" if share > UNKNOWN_ROUTE_LIMIT else "yellow"
+        console.print(f"[{colour}]маршрут не опознан у {unnamed} из {len(entries)} "
+                       f"строк ({share:.1%}); инструкция допускает "
+                       f"{UNKNOWN_ROUTE_LIMIT:.0%}[/{colour}]")
 
     rows = [e.row for e in entries]
 
@@ -379,8 +459,13 @@ def main() -> int:
         # нет вовсе (файл, камера, комментарий), — в ЛЮБОЙ строке: принцип 9
         # мерит происхождение, а не спор.
         marks = marks_for_repair(entry.repaired) | marks_for_our_measurement(entry.row)
-        if entry.decoded and args.operator_export is not None:
+        if entry.decoded and entry.agreement is not None:
             marks |= marks_for(entry.agreement)
+        # Время на общей шкале: где часы и минуты в графах разошлись с записью
+        # оператора, число в них наше — и неважно, наша это строка или его.
+        # Сверка сюда не годится: её допуск — минута, а бланк хранит минуты, и
+        # расхождение в семнадцать секунд через границу минуты видно заказчику.
+        marks |= marks_for_shifted_time(entry.row, entry.record)
         if marks:
             highlight[i] = marks
 
@@ -457,22 +542,34 @@ def main() -> int:
         console.print("[red]строка прошлой книги не нашла места: "
                        + ", ".join(f"{k}={v}" for k, v in sorted(cell.items())) + "[/red]")
 
-    targets = [args.out / name]
+    targets = []
+    ours = args.out / name
+    ours_lock = opened_by(ours)
+    if ours_lock is not None:
+        console.print(f"[red]книга {ours.name} открыта ({ours_lock}) — не трогаю: "
+                       "редактор держит свою копию и подмены файла не видит[/red]")
+    else:
+        targets.append(ours)
     if args.book is not None:
         # Книга заказчика перезаписывается ТОЛЬКО когда переносить нечего сверх
         # найденного: строка, потерявшая приметы, унесёт с собой его ручной ввод,
         # а восстановить его будет неоткуда (решение 079).
         lock = opened_by(args.book)
-        if lost:
+        if lost and not args.accept_losses:
             console.print(f"[red]книга заказчика не тронута: {len(lost)} строк "
                            "прошлой книги не сопоставлены, ручной ввод в них "
-                           "пропал бы[/red]")
-        elif lock is not None:
+                           "пропал бы. Заказчик готов это потерять — "
+                           "--accept-losses[/red]")
+        elif lock is not None:  # замок важнее согласия: правка живёт в памяти
+                                # редактора, и её не видно даже заказчику
             console.print(f"[red]книга заказчика открыта ({lock}) — не трогаю. "
                            "Редактор держит свою копию и подмены файла не видит: "
                            "чья-то работа пропала бы наверняка. Закройте книгу и "
                            "повторите[/red]")
         else:
+            if lost:
+                console.print(f"[yellow]пишу в книгу заказчика, теряя ручной ввод "
+                               f"в {len(lost)} строках — так решил заказчик[/yellow]")
             targets.append(args.book)
     for target in targets:
         if args.template is not None:

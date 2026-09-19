@@ -109,9 +109,40 @@ def test_a_duplicate_press_marks_the_whole_row():
 # трёхсот строк эти две клетки не найти. А ведь ради них всё и делается.
 
 def test_our_count_is_marked_in_the_operators_row():
-    """Счёт — наше измерение, и в книге он обязан быть виден."""
+    """Счёт — наше измерение, и в книге он обязан быть виден.
+
+    Графы переехали: K и L теперь заказчика, он заполняет их рукой
+    (решение 085), а наш счёт стоит в Q и R. Метится то, где счёт лежит, —
+    графы заказчика мы не красим, потому что не заполняем.
+    """
     from paxcount.delivery.marking import marks_for_our_measurement
-    assert {"K", "L"} <= marks_for_our_measurement(row())
+    marks = marks_for_our_measurement(row())
+    assert {"Q", "R"} <= marks
+    assert not ({"K", "L"} & marks), "чужую графу не метим: мы её не трогали"
+
+
+def test_the_decoder_name_is_marked_as_ours():
+    """Графа O — наша: у оператора на остановке нет ни фамилии, ни графы.
+
+    Принцип 9 мерит происхождение, а не спор, и исключений в нём нет. Эта
+    графа была единственной нашей без пометки.
+    """
+    from paxcount.delivery.marking import marks_for_our_measurement
+    assert "O" in marks_for_our_measurement(row(operator="Расшифровщик"))
+
+
+def test_an_empty_decoder_name_is_not_marked():
+    """Метится заполненная графа, а не сама возможность её заполнить."""
+    from paxcount.delivery.marking import marks_for_our_measurement
+    assert "O" not in marks_for_our_measurement(row(operator=""))
+
+
+def test_the_disagreement_column_is_marked_as_ours():
+    """Графа S целиком наша: у оператора её нет, и спорит в ней только он с нами."""
+    from paxcount.delivery.marking import marks_for_our_measurement
+    disputed = row(disagreements={"размер": "по таблице 3 такой пары не бывает"})
+    assert "S" in marks_for_our_measurement(disputed)
+    assert "S" not in marks_for_our_measurement(row())
 
 
 def test_a_row_without_a_count_is_not_marked():
@@ -178,3 +209,44 @@ def test_a_note_about_a_recording_gap_is_marked_like_any_other_comment():
     from paxcount.delivery.marking import marks_for_our_measurement
     noted = row(comment=None, notes=("разрыв записи камеры 2 07:33:45-07:51:39",))
     assert "M" in marks_for_our_measurement(noted)
+
+
+def test_a_shifted_minute_marks_the_time_of_an_operators_row():
+    """Поправка часов переставила минуту — клетки времени наши и красятся.
+
+    Строку оператора мы не расшифровывали, но время в ней не его: оно
+    переведено на общую шкалу измеренной поправкой (решение 067). Там, где
+    поправка перевалила через минуту, в графах C и D стоит НАШЕ число, и оно
+    отличается от того, что записал оператор, — принцип 9 исключений не знает.
+    """
+    from paxcount.delivery.marking import marks_for_shifted_time
+    written = record(created=datetime(2026, 9, 10, 6, 54, 59))
+    # 06:54:59 + 18 с = 06:55:17 — оператор записал 54-ю минуту, в книге 55-я.
+    assert marks_for_shifted_time(row(hours=6, minutes=55), written) == {"C", "D"}
+
+
+def test_a_shift_inside_the_same_minute_marks_nothing():
+    """Минута не сдвинулась — в графах то же число, что у оператора."""
+    from paxcount.delivery.marking import marks_for_shifted_time
+    written = record(created=datetime(2026, 9, 10, 6, 54, 10))
+    # 06:54:10 + 18 с = 06:54:28 — обе графы совпадают с записью.
+    assert marks_for_shifted_time(row(hours=6, minutes=54), written) == set()
+
+
+def test_a_decoded_row_marks_time_even_when_the_check_sees_no_disagreement():
+    """Наша строка: сверка спора не видит, а минута в графе всё равно чужая.
+
+    Допуск сверки — минута (`agreement.TIME_TOLERANCE`), и расхождение в
+    семнадцать секунд спором не считается: это свойство смены, а не машины.
+    Но бланк хранит часы и минуты, и 06:54:59 у оператора против 06:55 в книге
+    заказчик видит как разные минуты. Пометка здесь говорит не «мы спорим», а
+    «это число наше» — принцип 9 мерит происхождение, а не спор.
+    """
+    from paxcount.delivery.marking import marks_for_shifted_time
+    written = record(created=datetime(2026, 9, 10, 6, 54, 59))
+    ours = row(hours=6, minutes=55)
+    # Боевая поправка смены — 18 секунд: 06:54:59 + 18 с = 06:55:17 против
+    # 06:55:00 в строке, то есть семнадцать секунд, а допуск сверки — минута.
+    measured = timedelta(seconds=18)
+    assert agree(ours, [written], measured).mismatched == frozenset()
+    assert marks_for_shifted_time(ours, written) == {"C", "D"}
