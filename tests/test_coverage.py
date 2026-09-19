@@ -102,9 +102,9 @@ def _tracks(k2_real: float | None = None) -> list[CameraTrack]:
     if k2_real is not None:
         k2 = _replace(k2, real_duration_s=k2_real)
     return [
-        CameraTrack(camera="2", offset_to_k2_s=0.0,
+        CameraTrack(camera="2", offset_to_reference_s=0.0,
                      slots=[k2, parse_slot("2026-09-10 - 07-50-00 - 22739_2 - 02")]),
-        CameraTrack(camera="1", offset_to_k2_s=-358.0,
+        CameraTrack(camera="1", offset_to_reference_s=-358.0,
                      slots=[parse_slot("2026-09-10 - 07-24-02 - 22739_1 - 01")]),
     ]
 
@@ -159,7 +159,7 @@ def test_gaps_of_all_cameras_come_back_on_the_common_scale():
     from paxcount.delivery.coverage import gaps_of_cameras
 
     k3 = _replace(parse_slot("2026-08-10 - 07-00-00 - 22739_3 - 01"), real_duration_s=60.0)
-    tracks = [CameraTrack(camera="3", offset_to_k2_s=-418.0,
+    tracks = [CameraTrack(camera="3", offset_to_reference_s=-418.0,
                            slots=[k3, parse_slot("2026-08-10 - 07-10-00 - 22739_3 - 02")])]
     gaps = gaps_of_cameras(tracks)
     assert len(gaps) == 1 and gaps[0].camera == "3"
@@ -174,7 +174,7 @@ def test_a_technical_joint_is_not_a_gap_worth_naming():
 
     short = _replace(parse_slot("2026-09-10 - 07-00-00 - 22739_2 - 01"),
                       real_duration_s=596.0)
-    tracks = [CameraTrack(camera="2", offset_to_k2_s=0.0,
+    tracks = [CameraTrack(camera="2", offset_to_reference_s=0.0,
                            slots=[short, parse_slot("2026-09-10 - 07-10-00 - 22739_2 - 02")])]
     assert gaps_of_cameras(tracks) == [], "стык в 4 с — шум, а не разрыв"
 
@@ -195,9 +195,9 @@ def test_a_camera_that_cannot_see_the_stop_says_so_in_the_comment():
 
     k2 = _replace(parse_slot("2026-09-10 - 07-30-00 - 22739_2 - 01"), real_duration_s=120.0)
     tracks = [
-        CameraTrack(camera="2", offset_to_k2_s=0.0,
+        CameraTrack(camera="2", offset_to_reference_s=0.0,
                      slots=[k2, parse_slot("2026-09-10 - 07-50-00 - 22739_2 - 02")]),
-        CameraTrack(camera="1", offset_to_k2_s=-358.0,
+        CameraTrack(camera="1", offset_to_reference_s=-358.0,
                      slots=[parse_slot("2026-09-10 - 07-24-02 - 22739_1 - 01")]),
     ]
     out = with_footage(_row(), _dt(2026, 9, 10, 7, 35), tracks, [])
@@ -208,6 +208,6 @@ def test_a_camera_that_cannot_see_the_stop_says_so_in_the_comment():
 
 
 def test_a_counting_camera_needs_no_such_warning():
-    tracks = [CameraTrack(camera="2", offset_to_k2_s=0.0,
+    tracks = [CameraTrack(camera="2", offset_to_reference_s=0.0,
                            slots=[parse_slot("2026-09-10 - 07-30-00 - 22739_2 - 01")])]
     assert with_footage(_row(), _dt(2026, 9, 10, 7, 35), tracks, []).notes == ()

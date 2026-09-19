@@ -31,6 +31,7 @@ from paxcount.delivery.clocks import (
     from_reference,
     is_ready,
     load,
+    rebase,
     save,
     spread_s,
     to_reference,
@@ -40,7 +41,8 @@ FILE = "2026-08-10 - 06-50-46 - 22739_3 - 01"
 
 
 def records(**over) -> ClockRecord:
-    base = dict(camera="3", file=FILE, offset_to_k2_s=-423.0,
+    base = dict(camera="3", file=FILE, offset_to_reference_s=-423.0,
+                reference_camera="2",
                 measured_by="кузов пересекает границу кадров у опоры", date_override=None)
     base.update(over)
     return ClockRecord(**base)
@@ -52,19 +54,19 @@ def records(**over) -> ClockRecord:
 def test_to_reference_subtracts_the_camera_lag():
     """К3 06:57:57 при поправке −423 с → К2 07:05:00 (та же пара, что и раньше)."""
     moment = datetime(2026, 9, 10, 6, 57, 57)
-    result = to_reference(moment, "3", FILE, [records(offset_to_k2_s=-423.0)])
+    result = to_reference(moment, "3", FILE, [records(offset_to_reference_s=-423.0)])
     assert result == datetime(2026, 9, 10, 7, 5, 0)
 
 
 def test_from_reference_is_the_inverse():
     on_k2 = datetime(2026, 9, 10, 7, 5, 0)
-    result = from_reference(on_k2, "3", FILE, [records(offset_to_k2_s=-423.0)])
+    result = from_reference(on_k2, "3", FILE, [records(offset_to_reference_s=-423.0)])
     assert result == datetime(2026, 9, 10, 6, 57, 57)
 
 
 def test_zero_offset_is_a_legitimate_value():
     """К2 — сама точка отсчёта: у её файлов offset ровно 0, а не «нет записи»."""
-    row = records(camera="2", file="2026-09-10 - 06-56-06 - 22739_2 - 02", offset_to_k2_s=0.0)
+    row = records(camera="2", file="2026-09-10 - 06-56-06 - 22739_2 - 02", offset_to_reference_s=0.0)
     moment = datetime(2026, 9, 10, 6, 58, 41)
     assert to_reference(moment, "2", row.file, [row]) == moment
 
@@ -78,8 +80,8 @@ def test_missing_file_refuses_to_guess():
 
 def test_offset_is_looked_up_per_camera_and_file():
     """Тот же час на другой камере не путается с этим файлом."""
-    rows = [records(camera="3", offset_to_k2_s=-423.0),
-            records(camera="1", file="2026-09-10 - 06-56-30 - 22739_1 - 01", offset_to_k2_s=-376.0)]
+    rows = [records(camera="3", offset_to_reference_s=-423.0),
+            records(camera="1", file="2026-09-10 - 06-56-30 - 22739_1 - 01", offset_to_reference_s=-376.0)]
     moment = datetime(2026, 9, 10, 6, 56, 30)
     got = to_reference(moment, "1", "2026-09-10 - 06-56-30 - 22739_1 - 01", rows)
     assert got == moment - timedelta(seconds=-376.0)
@@ -97,7 +99,7 @@ def measurement(**over) -> Measurement:
 
 
 def test_measurement_offset_matches_the_worked_example():
-    assert measurement().offset_to_k2_s == pytest.approx(-423.0)
+    assert measurement().offset_to_reference_s == pytest.approx(-423.0)
 
 
 def test_spread_of_the_actual_k3_measurements_is_not_ready():
@@ -137,8 +139,8 @@ def test_ready_when_pairs_agree_within_threshold():
 
 def test_round_trips_through_csv(tmp_path):
     path = tmp_path / "22739.csv"
-    rows = [records(), records(camera="2", file="x", offset_to_k2_s=0.0),
-            records(camera="1", file="y", offset_to_k2_s=-376.0,
+    rows = [records(), records(camera="2", file="x", offset_to_reference_s=0.0),
+            records(camera="1", file="y", offset_to_reference_s=-376.0,
                     date_override="2026-09-10")]
     save(path, rows)
     assert load(path) == rows
@@ -166,7 +168,8 @@ def test_date_override_moves_the_moment_to_the_real_day():
     from paxcount.delivery.clocks import ClockRecord, to_reference
 
     name = "2026-08-10 - 06-50-46 - 22739_3 - 01"
-    rows = [ClockRecord(camera="3", file=name, offset_to_k2_s=-418.0,
+    rows = [ClockRecord(camera="3", file=name, offset_to_reference_s=-418.0,
+                         reference_camera="2",
                          measured_by="замер", date_override="2026-09-10")]
     got = to_reference(datetime(2026, 8, 10, 6, 58, 6), "3", name, rows)
     assert got == datetime(2026, 9, 10, 7, 5, 4)
@@ -179,7 +182,8 @@ def test_date_override_is_undone_on_the_way_back():
     from paxcount.delivery.clocks import ClockRecord, from_reference
 
     name = "2026-08-10 - 06-50-46 - 22739_3 - 01"
-    rows = [ClockRecord(camera="3", file=name, offset_to_k2_s=-418.0,
+    rows = [ClockRecord(camera="3", file=name, offset_to_reference_s=-418.0,
+                         reference_camera="2",
                          measured_by="замер", date_override="2026-09-10")]
     got = from_reference(datetime(2026, 9, 10, 7, 5, 4), "3", name, rows)
     assert got == datetime(2026, 8, 10, 6, 58, 6)
@@ -191,7 +195,87 @@ def test_without_an_override_the_date_is_left_alone():
     from paxcount.delivery.clocks import ClockRecord, to_reference
 
     name = "2026-09-10 - 06-56-30 - 22739_1 - 01"
-    rows = [ClockRecord(camera="1", file=name, offset_to_k2_s=-358.0,
+    rows = [ClockRecord(camera="1", file=name, offset_to_reference_s=-358.0,
+                         reference_camera="2",
                          measured_by="замер")]
     got = to_reference(datetime(2026, 9, 10, 6, 58, 57), "1", name, rows)
     assert got == datetime(2026, 9, 10, 7, 4, 55)
+
+
+# ---- Базовая камера: её выбирает владелец, а не константа --------------------
+#
+# Пункт 7 инструкции заказчика: «Ориентируемся на время на камере. А если оно
+# НЕВЕРНОЕ или не отображается, то ориентируемся на выгрузку или бланк от
+# оператора». Значит верную камеру надо доказать, а не назначить: на 22739 часы
+# К2 расходятся с оператором на 7 мин 16 с, а часы К3 — на 6 секунд, и время во
+# всех 295 строках стояло по неверным часам (решение 084).
+#
+# Отсюда точка отсчёта — величина таблицы, а не имя камеры в коде.
+
+
+def table(reference: str = "3") -> list[ClockRecord]:
+    """Боевая тройка 22739 на шкале К2, как она лежала до пересчёта."""
+    return [
+        ClockRecord(camera="2", file="к2", offset_to_reference_s=0.0,
+                     reference_camera="2", measured_by="ноль шкалы"),
+        ClockRecord(camera="3", file="к3", offset_to_reference_s=-418.0,
+                     reference_camera="2", measured_by="пара событий"),
+        ClockRecord(camera="1", file="к1", offset_to_reference_s=-358.0,
+                     reference_camera="2", measured_by="пара событий"),
+    ]
+
+
+def test_the_reference_camera_gets_a_zero_offset():
+    """Нуль шкалы — у той камеры, которую назвали базовой, и ни у какой другой."""
+    moved = rebase(table(), "3")
+    by_camera = {r.camera: r.offset_to_reference_s for r in moved}
+    assert by_camera["3"] == 0.0
+    assert by_camera["2"] != 0.0, "прежний ноль обязан сдвинуться"
+    assert {r.reference_camera for r in moved} == {"3"}
+
+
+def test_rebasing_shifts_every_camera_by_the_same_amount():
+    """Пересчёт — сдвиг всей таблицы, а не переписывание поправок по одной."""
+    by_camera = {r.camera: r.offset_to_reference_s for r in rebase(table(), "3")}
+    assert by_camera["2"] == pytest.approx(418.0)
+    assert by_camera["1"] == pytest.approx(60.0)
+
+
+def test_rebasing_does_not_move_vehicles_relative_to_each_other():
+    """Главный инвариант: расстояние между двумя событиями не зависит от шкалы.
+
+    Порядок строк — критерий приёмки, и пересчёт шкалы не вправе его тронуть.
+    """
+    moved = rebase(table(), "3")
+    at_k2 = datetime(2026, 9, 10, 6, 56, 6)
+    at_k3 = datetime(2026, 9, 10, 6, 50, 46)
+    before = (to_reference(at_k2, "2", "к2", table())
+               - to_reference(at_k3, "3", "к3", table()))
+    after = (to_reference(at_k2, "2", "к2", moved)
+              - to_reference(at_k3, "3", "к3", moved))
+    assert before == after
+
+
+def test_rebasing_to_a_camera_the_table_does_not_know_is_refused():
+    """Базовой нельзя назначить камеру, поправки которой нет: это догадка."""
+    with pytest.raises(ValueError, match="4"):
+        rebase(table(), "4")
+
+
+def test_a_table_that_names_two_reference_cameras_is_refused(tmp_path):
+    """Шкала одна на таблицу. Две — это две несравнимые ленты в одном файле."""
+    path = tmp_path / "22739.csv"
+    save(path, [
+        ClockRecord(camera="2", file="к2", offset_to_reference_s=0.0,
+                     reference_camera="2", measured_by="ноль"),
+        ClockRecord(camera="3", file="к3", offset_to_reference_s=0.0,
+                     reference_camera="3", measured_by="ноль"),
+    ])
+    with pytest.raises(ValueError, match="базов"):
+        load(path)
+
+
+def test_the_reference_camera_survives_a_round_trip(tmp_path):
+    path = tmp_path / "22739.csv"
+    save(path, rebase(table(), "3"))
+    assert {r.reference_camera for r in load(path)} == {"3"}

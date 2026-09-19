@@ -356,7 +356,7 @@ class CameraTrack:
     """
 
     camera: str
-    offset_to_k2_s: float
+    offset_to_reference_s: float
     slots: list[FileSlot]
 
 
@@ -382,7 +382,7 @@ def footage_at(moment: datetime, cameras: list[CameraTrack]) -> Footage | None:
     что имя файла выглядит правдоподобно.
     """
     for track in cameras:
-        raw = moment + timedelta(seconds=track.offset_to_k2_s)
+        raw = moment + timedelta(seconds=track.offset_to_reference_s)
         name = file_at(raw, track.slots)
         if name:
             return Footage(camera=track.camera, file=name, camera_ts=raw)

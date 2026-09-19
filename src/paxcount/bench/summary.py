@@ -28,7 +28,7 @@ from pathlib import Path
 
 from ..delivery.clocks import ClockRecord, from_reference
 from ..delivery.timeline import FileSlot
-# Импорт, а не копия (запрет 9): тем же порогом отличается «та же машина» от
+# Импорт, а не копия (запрет 8): тем же порогом отличается «та же машина» от
 # «другой» при поиске дублей разметки — это одна и та же длительность стоянки.
 from ..truth import SAME_VISIT_GAP_S
 from ..truth_rows import TruthRow

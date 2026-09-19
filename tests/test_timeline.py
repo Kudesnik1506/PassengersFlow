@@ -353,13 +353,13 @@ def test_a_moment_before_the_first_file_has_no_file():
 # камеры. Иначе на К3 (отстаёт на 418 с) будет назван сосед через файл.
 
 
-def track(camera: str, offset_to_k2_s: float, names: list[str], real: float | None = None):
+def track(camera: str, offset_to_reference_s: float, names: list[str], real: float | None = None):
     from paxcount.delivery.timeline import CameraTrack
 
     slots = [parse_slot(n) for n in names]
     if real is not None:
         slots = [replace(s, real_duration_s=real) for s in slots]
-    return CameraTrack(camera=camera, offset_to_k2_s=offset_to_k2_s, slots=slots)
+    return CameraTrack(camera=camera, offset_to_reference_s=offset_to_reference_s, slots=slots)
 
 
 def test_the_reference_camera_answers_when_it_was_recording():

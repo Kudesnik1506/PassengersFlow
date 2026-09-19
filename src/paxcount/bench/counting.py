@@ -27,7 +27,7 @@ from ..core.trackdata import TrackData
 from ..core.types import Direction, DoorSpec, VehicleVisit, VideoConfig
 from ..doorprop import DoorCandidate
 from ..doorprop.layout import layout_from_candidates
-# Импорт, а не копия (запрет 9): тем же порогом отличается «та же машина на том
+# Импорт, а не копия (запрет 8): тем же порогом отличается «та же машина на том
 # же месте» при поиске дублей разметки (решение 047) — вопрос здесь тот же.
 from ..truth import SAME_VISIT_IOU, DoorLayout, iou
 from ..zonecount import activity_window, count_zone

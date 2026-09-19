@@ -132,7 +132,7 @@ def gaps_of_cameras(cameras: list[CameraTrack],
                 continue
             out.append(Gap(
                 camera=track.camera,
-                start=start - timedelta(seconds=track.offset_to_k2_s),
+                start=start - timedelta(seconds=track.offset_to_reference_s),
                 duration_s=seconds, operator_records_inside=0,
             ))
     return out

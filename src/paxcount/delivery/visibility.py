@@ -1,7 +1,7 @@
 """Какой визит относится к строке книги — и, значит, по какой рамке судить.
 
-`reconcile.clipped_code` отвечает на вопрос «виден ли кузов целиком», имея
-рамку. Здесь решается предыдущий: чья это рамка. Разметка есть на шесть визитов
+`edgedoors` отвечает на вопрос «все ли двери попали в кадр», имея рамку и
+кадр. Здесь решается предыдущий: чья это рамка. Разметка есть на шесть визитов
 из трёхсот, детекция — на всю смену, и связать строку с визитом можно только по
 времени: бортового номера детектор не читает (решение 003).
 
@@ -19,8 +19,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-
-from .reconcile import clipped_code
 
 # Замерено (см. докстринг): столько строка может отстоять от края стоянки и всё
 # ещё относиться к ней. Допуск после шире — оператор жмёт вдогонку.
@@ -46,17 +44,19 @@ class Sighting:
                 <= self.end + timedelta(seconds=AFTER_S))
 
 
-def code_at(moment: datetime, sightings: list[Sighting],
-             orientation: str | None) -> int | None:
-    """Код таблицы 2 для строки, стоящей в этот момент. `None` — сказать нечего.
+def sighting_at(moment: datetime,
+                 sightings: list[Sighting]) -> Sighting | None:
+    """Визит, к которому относится строка, стоящая в этот момент.
 
     Визит, накрывающий момент СОБСТВЕННОЙ стоянкой, важнее того, чей край
     ближе: иначе строка, попавшая в конец долгой стоянки, ушла бы к следующей
     машине, вставшей через секунду.
+
+    `None` — сказать нечего, и это не повод взять ближайший: чужая рамка даст
+    правдоподобный и неверный код в отчёте заказчику.
     """
     inside = [s for s in sightings if s.start <= moment <= s.end]
     near = inside or [s for s in sightings if s.covers(moment)]
     if not near:
         return None
-    chosen = min(near, key=lambda s: abs((s.start - moment).total_seconds()))
-    return clipped_code(chosen.box, chosen.frame_size, orientation)[0]
+    return min(near, key=lambda s: abs((s.start - moment).total_seconds()))
