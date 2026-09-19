@@ -151,3 +151,15 @@ def test_single_answer_is_not_a_consensus():
 def test_empty_input_is_not_a_zero_result():
     result = consensus([])
     assert not result.agreed and result.boarded is None
+
+
+def test_an_even_split_is_not_an_agreement():
+    """Двое на двоих — спор, а не согласие.
+
+    Правило «двое и больше» верно на трёх прогонах и врёт на четырёх: при
+    2:2 `Counter` вернёт того, кто попался первым, и жребий поедет в книгу
+    как согласие. Большинство здесь строгое — больше половины.
+    """
+    result = consensus([answer(3, 0), answer(3, 0), answer(5, 0), answer(5, 0)])
+    assert not result.agreed
+    assert result.boarded is None

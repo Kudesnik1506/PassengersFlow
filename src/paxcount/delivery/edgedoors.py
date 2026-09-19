@@ -28,10 +28,10 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass
 from typing import Sequence
 
+from ..core.majority import strict
 from ..doorprop.layout import NOSE_LEFT, NOSE_RIGHT
 from .model import DOORS_BY_SIZE, VehicleSize
 from .reconcile import EDGE_TOLERANCE_PX, code_for_hidden
@@ -129,20 +129,13 @@ def agreed(answers: Sequence[DoorAnswer]) -> tuple[DoorAnswer | None, str]:
         return None, ("один прогон — это мнение, а не согласие: нужно минимум "
                        "двух независимых (решение 024)")
 
-    total, total_note = _majority([a.total for a in answers], "дверей всего")
-    in_frame, frame_note = _majority([a.in_frame for a in answers],
+    total, total_note = strict([a.total for a in answers], "дверей всего")
+    in_frame, frame_note = strict([a.in_frame for a in answers],
                                       "попало в кадр")
     notes = [n for n in (total_note, frame_note) if n]
     if notes:
         return None, "; ".join(notes)
     return DoorAnswer(total=total, in_frame=in_frame), ""
-
-
-def _majority(values: list[int], label: str) -> tuple[int | None, str]:
-    best, hits = Counter(values).most_common(1)[0]
-    if hits * 2 > len(values):
-        return best, ""
-    return None, f"по «{label}» прогоны разошлись: {sorted(values)}"
 
 
 def size_mismatch(total_seen: int, size: VehicleSize | None) -> str | None:

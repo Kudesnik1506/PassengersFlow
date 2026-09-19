@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import json
 import re
-from collections import Counter
 from dataclasses import dataclass, field
+
+from ..core.majority import strict
 
 DIRECTIONS = frozenset({"in", "out"})
 
@@ -128,18 +129,9 @@ def consensus(answers: list[CountAnswer]) -> Consensus:
             tuple(answers),
         )
 
-    boarded, boarded_note = _majority([a.boarded for a in answers], "вошло")
-    alighted, alighted_note = _majority([a.alighted for a in answers], "вышло")
+    boarded, boarded_note = strict([a.boarded for a in answers], "вошло")
+    alighted, alighted_note = strict([a.alighted for a in answers], "вышло")
     notes = [n for n in (boarded_note, alighted_note) if n]
     agreed = boarded is not None and alighted is not None
     reason = "прогоны сошлись" if agreed else "; ".join(notes) + " — нужен человек"
     return Consensus(boarded, alighted, agreed, reason, tuple(answers))
-
-
-def _majority(values: list[int], label: str) -> tuple[int | None, str]:
-    """Значение, которое назвало большинство. Среднее не берётся никогда."""
-    counts = Counter(values)
-    best, hits = counts.most_common(1)[0]
-    if hits >= 2:
-        return best, ""
-    return None, f"по «{label}» прогоны разошлись: {sorted(values)}"
