@@ -98,8 +98,26 @@ def _plain(value: str) -> str:
     return text.lstrip("0") or "0" if text.isdigit() else text
 
 
-def _key_of_cells(cell: dict[str, str]) -> tuple[str, ...]:
-    return tuple(_plain(cell.get(c) or "") for c in _ROW_KEY)
+# Чем узнаётся строка, у которой номера ТС нет вовсе. Такие строки появились
+# вместе с цепочкой по К1: машину видели, а прочесть не смогли. Две безымянные
+# строки в одну минуту дали бы одинаковые приметы, и перенос правок заказчика
+# начал бы путать их — на всей книге, а не только на них.
+#
+# Графа P (камера и её часы) годится в приметы по той же причине, что и
+# остальные три: её пишем мы, и человеку там дописывать нечего.
+_NAMELESS_KEY = "P"
+
+
+def key_of_cells(cell: dict[str, str]) -> tuple[str, ...]:
+    """Приметы строки. Без номера ТС к ним добавляется камера с её часами.
+
+    Прежние приметы не трогаются: реестр правок собран на трёх графах, и
+    расширь мы их всем строкам — ни одна записанная правка не нашла бы клетки.
+    """
+    marks = tuple(_plain(cell.get(c) or "") for c in _ROW_KEY)
+    if marks[_ROW_KEY.index("G")]:
+        return marks
+    return marks + (_plain(cell.get(_NAMELESS_KEY) or ""),)
 
 
 def _key_of_row(row: DeliveryRow) -> tuple[str, ...]:
@@ -109,7 +127,7 @@ def _key_of_row(row: DeliveryRow) -> tuple[str, ...]:
     сузив одну, я уже разошёлся со второй: приметы перестали совпадать вовсе,
     а выглядело это как «строка не нашлась».
     """
-    return _key_of_cells(dict(zip(COLUMNS, row_values(row))))
+    return key_of_cells(dict(zip(COLUMNS, row_values(row))))
 
 
 def _places(rows: list[DeliveryRow]) -> dict[tuple, list[int]]:
@@ -159,7 +177,7 @@ def found(book: list[dict[str, str]],
     unknown: list[tuple[str, ...]] = []
     seen: dict[tuple, int] = {}
     for cell in book:
-        key = _key_of_cells(cell)
+        key = key_of_cells(cell)
         repeat = seen.get(key, 0)
         seen[key] = repeat + 1
         places = was.get(key, [])
@@ -190,7 +208,7 @@ def found(book: list[dict[str, str]],
 def _cells_by_key(rows: list[dict[str, str]]) -> dict[tuple, list[dict[str, str]]]:
     by_key: dict[tuple, list[dict[str, str]]] = {}
     for cell in rows:
-        by_key.setdefault(_key_of_cells(cell), []).append(cell)
+        by_key.setdefault(key_of_cells(cell), []).append(cell)
     return by_key
 
 
@@ -311,7 +329,7 @@ def orphaned(previous: list[dict[str, str]],
     wanted = _places(rows)
     lost: list[dict[str, str]] = []
     for cell in previous:
-        places = wanted.get(_key_of_cells(cell))
+        places = wanted.get(key_of_cells(cell))
         if places:
             places.pop(0)
             continue
@@ -349,7 +367,7 @@ def carried_over(previous: list[dict[str, str]],
 
     kept: dict[int, dict[str, str]] = {}
     for cell in previous:
-        places = wanted.get(_key_of_cells(cell))
+        places = wanted.get(key_of_cells(cell))
         if not places:
             continue
         index = places.pop(0)

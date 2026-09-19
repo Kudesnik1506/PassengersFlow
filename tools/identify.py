@@ -205,6 +205,93 @@ def export(args) -> int:
     return 0
 
 
+ANSWERS_DIR = IDENTIFY_DIR / "ответы"
+
+
+def read_answers() -> dict[str, list]:
+    """Ответы по кадрам: прогон — это отдельный файл в `ответы/`.
+
+    Так же устроен разбор у кодов таблицы 2: счётчики работают вслепую и
+    складывают ответы порознь, а сведение — отдельный шаг.
+    """
+    from paxcount.counting.identify import parse_identity
+
+    runs: dict[str, list] = {}
+    for path in sorted(ANSWERS_DIR.glob("*.json")):
+        body = json.loads(path.read_text(encoding="utf-8"))
+        for frame, answer in body.items():
+            try:
+                runs.setdefault(frame, []).append(
+                    parse_identity(json.dumps(answer, ensure_ascii=False)))
+            except ValueError as why:
+                console.print(f"[yellow]{path.name}, {frame}: {why}[/yellow]")
+    return runs
+
+
+def apply(args) -> int:
+    from paxcount.counting.identify import agreed_identity
+    from paxcount.delivery.model import VehicleKind
+
+    tasks = json.loads((IDENTIFY_DIR / "задание.json").read_text(encoding="utf-8"))
+    runs = read_answers()
+    if not runs:
+        console.print("[red]ответов нет — сначала прогоны по кадрам[/red]")
+        return 2
+
+    portal = None
+    if args.portal:
+        from paxcount.portal import PortalClient, credentials, http_transport
+        portal = PortalClient(http_transport(), *credentials())
+        cache = OUT_DIR / "portal" / f"{args.stop}.json"
+        if cache.exists():
+            portal.preload(json.loads(cache.read_text(encoding="utf-8")))
+
+    rows = []
+    for task in tasks:
+        answers = runs.get(task["кадр"], [])
+        agreed, why = agreed_identity(answers)
+        row = {
+            "кадр": task["кадр"], "проезд": task["проезд"],
+            "стоянка_К2": task["стоянка_К2"], "прогонов": len(answers),
+            "вид": agreed.kind or "", "борт": agreed.board_number or "",
+            "госномер_с_кадра": agreed.state_number or "",
+            "маршрут_с_кадра": agreed.route or "",
+            "маршрут_портала": "", "госномер_портала": "", "перевозчик": "",
+            "причина": "; ".join(f"{k}: {v}" for k, v in sorted(why.items())),
+        }
+        if portal is not None and agreed.board_number:
+            kind = VehicleKind.BUS
+            found = portal.lookup(agreed.board_number, args.date, kind,
+                                   at=datetime.fromisoformat(task["стоянка_К2"]))
+            if getattr(found, "route", None):
+                row["маршрут_портала"] = found.route or ""
+                row["госномер_портала"] = found.state_number or ""
+                row["перевозчик"] = found.carrier or ""
+            else:
+                row["причина"] = "; ".join(x for x in (row["причина"],
+                                                        "портал машину не знает") if x)
+        rows.append(row)
+
+    if portal is not None:
+        cache = OUT_DIR / "portal" / f"{args.stop}.json"
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps(portal.snapshot(), ensure_ascii=False),
+                          encoding="utf-8")
+
+    path = IDENTIFY_DIR / "опознание.csv"
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    known = sum(1 for r in rows if r["борт"])
+    routed = sum(1 for r in rows if r["маршрут_портала"] or r["маршрут_с_кадра"])
+    console.print(f"кандидатов {len(rows)}, борт согласован у {known}, "
+                   f"маршрут известен у {routed}")
+    console.print(f"[dim]{path}[/dim]")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="команда", required=True)
@@ -213,8 +300,13 @@ def main() -> int:
     out.add_argument("--camera", default="2", help="счётная камера, где ищутся стоянки")
     out.add_argument("--book", type=Path,
                       default=OUT_DIR / "2026-09-10-697-22739.xlsx")
+    use = sub.add_parser("apply", help="свести ответы прогонов и спросить портал")
+    use.add_argument("--stop", required=True)
+    use.add_argument("--date", default="2026-09-10", help="дата смены для портала")
+    use.add_argument("--portal", action="store_true",
+                      help="спросить маршрут и госномер по борту (сеть)")
     args = parser.parse_args()
-    return export(args)
+    return export(args) if args.команда == "export" else apply(args)
 
 
 if __name__ == "__main__":
