@@ -92,7 +92,10 @@ def with_footage(row: DeliveryRow, moment: datetime,
     проверяющему, почему у соседних строк файлы разных камер, — а заказчик
     просил аномалию съёмки отражать словами (`reconcile.gap_note`).
     """
-    notes = notes_for_visit(moment, gaps)
+    # Пометки строки не заменяются, а дополняются: строка цепочки приходит сюда
+    # со своими словами («оператор не записал», «стоянка не подтверждена»), и
+    # затереть их разрывом записи значит заставить её молчать о самом спорном.
+    notes = (*row.notes, *notes_for_visit(moment, gaps))
     found = footage_at(moment, cameras)
     if found is None:
         return row.model_copy(update={"video": "", "camera": "",

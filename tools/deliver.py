@@ -48,9 +48,12 @@ from paxcount.delivery.reconcile import VisitFacts  # noqa: E402
 from paxcount.delivery.agreement import Agreement, agree  # noqa: E402
 from paxcount.delivery import manual  # noqa: E402
 from paxcount.delivery.fill import fill_template, opened_by  # noqa: E402
+from paxcount.delivery.chain import (  # noqa: E402
+    CHAIN_ORIGIN, Identified, entries as chain_entries,
+)
 from paxcount.delivery.marking import (  # noqa: E402
-    marks_for, marks_for_duplicate, marks_for_our_measurement, marks_for_repair,
-    marks_for_shifted_time,
+    marks_for, marks_for_chain, marks_for_duplicate, marks_for_our_measurement,
+    marks_for_repair, marks_for_shifted_time,
 )
 from paxcount.delivery.model import Occupancy  # noqa: E402
 from paxcount.delivery.plates import with_plate  # noqa: E402
@@ -58,7 +61,7 @@ from paxcount.delivery.operator import (  # noqa: E402
     drop_duplicates, for_stop, read_export,
 )
 from paxcount.delivery.sequence import (  # noqa: E402
-    Decoded, Entry, backbone, clock_shift, merge,
+    OPERATOR, OUR_COUNT, Decoded, Entry, backbone, clock_shift, merge,
 )
 from paxcount.delivery.coverage import gaps_of_cameras, with_footage  # noqa: E402
 from paxcount.delivery.timeline import CameraTrack, parse_slot  # noqa: E402
@@ -211,6 +214,55 @@ def edge_answers(stop: str) -> dict[tuple[str, str], dict]:
         for row in csv.DictReader(f):
             found[(row["camera"], row["visit_start"])] = row
     return found
+
+
+def identified(stop: str, *, group: str, operator: str) -> list[Entry]:
+    """Строки по машинам, которых нет ни в выгрузке оператора, ни в нашем счёте.
+
+    Считается отдельно (`tools/chain.py` и `tools/identify.py`): цепочка стоит
+    полутора часов детекции, а опознание — денег на прогоны модели, и повторять
+    это на каждой сборке книги нельзя. Нет таблицы — книга соберётся без этих
+    строк, как собиралась до сих пор.
+
+    Отсеивается здесь только то, что уже названо в таблице опознания: заезд,
+    который оператор всё же записал (`уже_в_книге`), и не общественный транспорт.
+    Вид ТС обязателен: без него строки нет вовсе — модель `DeliveryRow` пустого
+    вида не принимает, а подставить «автобус» по умолчанию значит выдумать.
+    """
+    path = OUT_DIR / "identify" / "опознание.csv"
+    if not path.exists():
+        return []
+    found: list[Identified] = []
+    skipped: Counter = Counter()
+    with path.open(encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            if row.get("уже_в_книге"):
+                skipped[row["уже_в_книге"]] += 1
+                continue
+            kind = _kind((row.get("вид") or "").strip())
+            if kind is None:
+                skipped["вид не опознан"] += 1
+                continue
+            found.append(Identified(
+                moment=datetime.fromisoformat(row["на_шкале"]),
+                kind=kind,
+                board=(row.get("борт") or "").strip() or None,
+                # Госномер портала главнее прочтённого с кадра: регион мы
+                # угадываем неверно, и это ровно тот случай, ради которого
+                # портал спрашивается по борту (решение 026).
+                state=((row.get("госномер_портала") or "").strip()
+                        or (row.get("госномер_с_кадра") or "").strip() or None),
+                route=((row.get("маршрут_портала") or "").strip()
+                        or (row.get("маршрут_с_кадра") or "").strip() or None),
+                note=(row.get("оговорка") or "").strip(),
+                source=f"кадр {row['кадр']}, проезд {row['проезд']}",
+            ))
+    if found or skipped:
+        console.print(f"цепочка по К1: строк на вписывание {len(found)}"
+                       + ("; пропущено " + ", ".join(f"{k} {n}" for k, n
+                                                      in sorted(skipped.items()))
+                           if skipped else ""))
+    return chain_entries(found, group=group, stop=stop, operator=operator)
 
 
 def with_edge_code(row, sightings: dict[str, list[Sighting]], answers: dict):
@@ -383,7 +435,7 @@ def main() -> int:
         ))
 
     # Лента всей смены, а не выборка посчитанных машин (решение 069).
-    entries = [Entry(d.moment, d.row, True, d.agreement.record) for d in decoded]
+    entries = [Entry(d.moment, d.row, OUR_COUNT, d.agreement.record) for d in decoded]
     if records and not args.only_decoded:
         shift = clock_shift(decoded)
         if shift is None:
@@ -398,8 +450,11 @@ def main() -> int:
         # смены расхождение часов книга снимает целиком, и помечать им строку
         # значит утверждать расхождение, которого в ней больше нет.
         decoded = [replace(d, agreement=agree(d.row, canonical, shift)) for d in decoded]
+        # Третий источник строк: машины, опознанные по К1. Вливаются тем же
+        # слиянием, что и всё остальное, — порядок ленты складывается один раз.
+        extra = identified(args.stop, group=args.group, operator=args.operator)
         entries = merge(decoded, spine, shift=shift, group=args.group,
-                         stop=args.stop, operator=args.operator)
+                         stop=args.stop, operator=args.operator, extra=extra)
         console.print(f"часы камеры впереди часов оператора на {shift}; "
                        f"за {day:%d.%m.%Y} у оператора {len(spine)} записей, "
                        f"из них повторных нажатий {len(duplicate_ids)}, "
@@ -461,6 +516,9 @@ def main() -> int:
         # нет вовсе (файл, камера, комментарий), — в ЛЮБОЙ строке: принцип 9
         # мерит происхождение, а не спор.
         marks = marks_for_repair(entry.repaired) | marks_for_our_measurement(entry.row)
+        # Машину нашли мы одни: записи оператора у неё нет ни в одной графе.
+        if entry.origin == CHAIN_ORIGIN:
+            marks |= marks_for_chain()
         if entry.decoded and entry.agreement is not None:
             marks |= marks_for(entry.agreement)
         # Время на общей шкале: где часы и минуты в графах разошлись с записью
@@ -477,7 +535,10 @@ def main() -> int:
         table.add_column(column, no_wrap=True)
     for i, entry in enumerate(entries, start=2):
         row, deal = entry.row, entry.agreement
-        if not entry.decoded:
+        if entry.origin == CHAIN_ORIGIN:
+            verdict = "[yellow]записи нет[/yellow]"
+            source = "[yellow]цепочка К1[/yellow]"
+        elif not entry.decoded:
             verdict = ""
             source = ("[magenta]повтор[/magenta]"
                        if entry.record is not None and id(entry.record) in duplicate_ids
@@ -504,7 +565,9 @@ def main() -> int:
     # Замечания приёмки по нерасшифрованным строкам не перечисляются поимённо:
     # их сотня, и они все об одном — работа не сделана. Поимённо только те,
     # где мы уже что-то утверждаем.
-    not_ours = {i for i, e in enumerate(entries, start=2) if not e.decoded}
+    # Строки цепочки сюда не входят: мы о них уже что-то утверждаем, и
+    # замечание по ним обязано звучать поимённо, а не общим числом.
+    not_ours = {i for i, e in enumerate(entries, start=2) if e.origin == OPERATOR}
     problems = validate(rows)
     bulk: Counter = Counter()
     expected = 0

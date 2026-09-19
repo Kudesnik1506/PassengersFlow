@@ -25,7 +25,10 @@ import pytest
 from paxcount.delivery.agreement import Agreement
 from paxcount.delivery.model import DeliveryRow, VehicleKind, VehicleSize
 from paxcount.delivery.operator import OperatorRecord
-from paxcount.delivery.sequence import Decoded, backbone, clock_shift, merge
+from paxcount.delivery.chain import CHAIN_ORIGIN
+from paxcount.delivery.sequence import (
+    OPERATOR, OUR_COUNT, Decoded, Entry, backbone, clock_shift, merge,
+)
 
 STOP = "22739"
 
@@ -248,3 +251,54 @@ def test_the_entry_carries_its_own_agreement():
     assert entry.agreement is not None
     assert entry.agreement.record is match
     assert merged([], [record("07:00:00", "1111")], timedelta(0))[0].agreement is None
+
+
+# --- третий источник строк: цепочка по камере 1 --------------------------------
+#
+# До сих пор строка рождалась из нажатия оператора или из нашей расшифровки.
+# Машина, которую он не нажал, а мы не считали, не попадала в книгу вовсе —
+# и заказчик нашёл такую глазами. Опознанные по К1 проезды вписываются в ту же
+# ленту тем же слиянием: другое место склейки означало бы второй порядок строк.
+
+def test_a_chain_row_is_written_in_between_the_operator_records():
+    """Найденная по К1 машина встаёт на своё место по времени, а не в конец.
+
+    Лента читается заказчиком как последовательность прибытий (решение 028):
+    правильно заполненная строка в конце говорит о смене неправду.
+    """
+    before, after = record("07:00:00", "1111"), record("07:10:00", "3333")
+    extra = Entry(moment=datetime.fromisoformat("2026-09-10T07:05:00"),
+                   row=our_row("07:05:00", "2222"), origin=CHAIN_ORIGIN)
+    order = merge([], [before, after], shift=timedelta(0), group="697",
+                   stop=STOP, operator="Иванов Иван", extra=[extra])
+    assert [e.row.board_number for e in order] == ["1111", "2222", "3333"]
+
+
+def test_a_chain_row_is_not_our_decoding():
+    """Строка цепочки — не расшифровка: считать её нашей значит лишить её
+    граф N и P.
+
+    Книга проставляет файл записи и часы камеры только строкам, которых мы не
+    расшифровывали: у расшифрованных они уже стоят. Строка цепочки приходит
+    без них, и перепутать источники здесь — значит выдать строку, по которой
+    нечего перемотать.
+    """
+    extra = Entry(moment=datetime.fromisoformat("2026-09-10T07:05:00"),
+                   row=our_row("07:05:00", "2222"), origin=CHAIN_ORIGIN)
+    assert not extra.decoded
+
+
+def test_the_three_sources_of_a_row_are_told_apart():
+    """Источник строки называется словом, а не флагом «наша / не наша».
+
+    Флага хватало, пока источников было два. С третьим «не наша» перестало
+    значить «оператор»: замечания приёмки по строкам цепочки должны звучать
+    поимённо, а по строкам оператора — общим числом.
+    """
+    match = record("06:54:59", "1596")
+    extra = Entry(moment=datetime.fromisoformat("2026-09-10T07:06:00"),
+                   row=our_row("07:06:00", "2222"), origin=CHAIN_ORIGIN)
+    order = merge([decoded("07:02:17", "1596", match=match)], [match, record("07:08:00", "3333")],
+                   shift=timedelta(minutes=7, seconds=18), group="697",
+                   stop=STOP, operator="Иванов Иван", extra=[extra])
+    assert [e.origin for e in order] == [OUR_COUNT, CHAIN_ORIGIN, OPERATOR]

@@ -267,3 +267,86 @@ def test_machines_a_half_minute_apart_are_two_rows():
                         [stop_at(0), stop_at(25)],
                         shift=timedelta(0), window=timedelta(seconds=60))
     assert len(found) == 2
+
+
+# --- строка книги из опознанного проезда --------------------------------------
+#
+# Машина, которую оператор не нажал, а мы не считали, до сих пор не попадала в
+# книгу вовсе: у ленты было два источника строк — нажатия и наши расшифровки.
+# Третий источник — цепочка по К1 — отличается от обоих тем, что о машине
+# известно только опознание: ни счёта, ни наполненности у неё нет и быть не
+# может.
+
+from paxcount.delivery.chain import (  # noqa: E402
+    CHAIN_ORIGIN, NOT_RECORDED_NOTE, Identified, entries,
+)
+from paxcount.delivery.model import VehicleKind  # noqa: E402
+
+
+def found(**kw) -> Identified:
+    base = dict(moment=t(0), kind=VehicleKind.BUS, board="38208",
+                 state="Р718ОК198", route="226", note="",
+                 source="файл 2026-09-10 - 07-05-00 - 22739_1 - 02, трек 16537")
+    return Identified(**{**base, **kw})
+
+
+def built(**kw):
+    return entries([found(**kw)], group="697", stop="22739",
+                    operator="Иванов Иван")[0]
+
+
+def test_a_chain_row_says_the_operator_did_not_record_it():
+    """Строка без нажатия обязана объясниться словами, а не только цветом.
+
+    Заказчик сверяет книгу со своей выгрузкой построчно. Строка, которой в
+    выгрузке нет, без объяснения читается как наша ошибка ввода.
+    """
+    assert NOT_RECORDED_NOTE in built().row.notes
+
+
+def test_a_vehicle_without_a_readable_number_still_gets_a_row():
+    """Номер не прочитался — машина всё равно была (решение заказчика).
+
+    Пропустить её значит вернуться к тому, ради чего всё делалось: в книге
+    опять не будет строки на приехавшую машину.
+    """
+    row = built(board=None, state=None, route=None).row
+    assert row.number is None
+    assert NOT_RECORDED_NOTE in row.notes
+
+
+def test_the_origin_of_a_chain_row_does_not_go_into_the_disagreement_column():
+    """Графа S — место спора, а не родословной (решение 087).
+
+    Первая боевая сборка залила её на 292 строках из 295 именно
+    происхождением, и графа перестала значить что-либо.
+    """
+    row = built().row
+    assert row.disagreement_cell is None
+    assert any("16537" in why for why in row.overrides.values())
+
+
+def test_an_unconfirmed_stop_is_said_in_the_comment():
+    """«Счётные камеры молчали» — оговорка о силе утверждения, и она в книге.
+
+    К1 не отличает проезд от стоянки. Строка, заведённая в слепое окно, —
+    единственная, где стоянка не подтверждена никем, и молчать об этом нельзя.
+    """
+    row = built(note="стоянка не подтверждена: счётные камеры молчали").row
+    assert row.comment_cell is not None
+    assert "стоянка не подтверждена" in row.comment_cell
+
+
+def test_a_chain_row_carries_no_count_and_no_occupancy():
+    """Мы её не считали: счёт и наполненность пусты, а не нулевые.
+
+    Ноль здесь — измерение, которого не было; `None` доходит до книги как N/A.
+    """
+    row = built().row
+    assert row.boarded is None and row.alighted is None
+    assert row.occupancy is None and row.size is None
+
+
+def test_a_chain_row_is_marked_as_coming_from_camera_one():
+    """Источник строки назван: по нему книга красит её целиком и считает итоги."""
+    assert built().origin == CHAIN_ORIGIN

@@ -211,3 +211,16 @@ def test_a_counting_camera_needs_no_such_warning():
     tracks = [CameraTrack(camera="2", offset_to_reference_s=0.0,
                            slots=[parse_slot("2026-09-10 - 07-30-00 - 22739_2 - 01")])]
     assert with_footage(_row(), _dt(2026, 9, 10, 7, 35), tracks, []).notes == ()
+
+
+def test_the_row_keeps_what_it_already_said_about_itself():
+    """Пометка строки переживает проставление записи.
+
+    Строка цепочки приходит в сборку со своими словами: «оператор не записал»,
+    «стоянка не подтверждена». Файл и часы камеры ей проставляются позже, и
+    затереть этими словами прежние значит выдать строку, которая молчит о
+    самом спорном в себе.
+    """
+    row = _row().model_copy(update={"notes": ("оператор машину не записал",)})
+    out = with_footage(row, _dt(2026, 9, 10, 7, 35), _tracks(), [])
+    assert "оператор машину не записал" in out.notes

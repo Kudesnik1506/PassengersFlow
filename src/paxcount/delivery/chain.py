@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, Mapping, Sequence
 
 if TYPE_CHECKING:  # трекинг тянет numpy и веса — цепочке они не нужны
     from ..visits import VehicleTrack
+    from .model import VehicleKind
+    from .sequence import Entry
     from .visibility import Sighting
 
 # Цена пропуска с любой стороны. Пара оценивается от 0 до 1, поэтому пропуск
@@ -337,3 +339,69 @@ def already_known(moment: datetime,
     край = window.total_seconds()
     return any(known == number and abs((moment - at).total_seconds()) <= край
                 for at, known in book)
+
+
+# --- строка книги из опознанного проезда --------------------------------------
+
+CHAIN_ORIGIN = "цепочка К1"
+# Почему эта строка стоит в книге, если её нет в выгрузке. Заказчик сверяет
+# книгу со своей выгрузкой построчно, и строка без объяснения читается как наша
+# ошибка ввода, а не как найденная машина.
+NOT_RECORDED_NOTE = "оператор машину не записал: найдена по камере 1"
+
+
+@dataclass(frozen=True)
+class Identified:
+    """Проезд, у которого есть имя: что прочли с кадра и что сказал портал.
+
+    `note` — оговорка о силе утверждения (стоянку не подтвердила ни одна
+    счётная камера). `source` — происхождение строки словами: файл и трек.
+    """
+
+    moment: datetime                 # общая шкала смены
+    kind: "VehicleKind"
+    board: str | None = None
+    state: str | None = None
+    route: str | None = None
+    note: str = ""
+    source: str = ""
+
+
+def entries(found: Sequence[Identified], *, group: str, stop: str,
+             operator: str) -> list["Entry"]:
+    """Строки ленты по опознанным проездам — со всем, чего у них нет.
+
+    Наполненность, размер и счёт остаются пустыми, и это не пробел, а
+    утверждение: наполненность своей моделью не считается (решение 032), размер
+    определяется числом дверей, а К1 смотрит навстречу и дверей не видит
+    (решение 093), счёта по этой машине не было вовсе.
+
+    Происхождение уходит в `overrides`, а не в графу S: графа расхождений —
+    место спора, а не родословной (решение 087).
+    """
+    from .model import DeliveryRow
+    from .sequence import Entry
+
+    built: list[Entry] = []
+    for item in found:
+        notes = (NOT_RECORDED_NOTE, *( (item.note,) if item.note else () ))
+        row = DeliveryRow(
+            group=group,
+            date=item.moment.strftime("%d.%m.%Y"),
+            hours=item.moment.hour,
+            minutes=item.moment.minute,
+            stop=stop,
+            kind=item.kind,
+            board_number=item.board or None,
+            state_number=item.state or None,
+            route=item.route or None,
+            occupancy=None,
+            size=None,
+            boarded=None,
+            alighted=None,
+            operator=operator,
+            notes=notes,
+            overrides={CHAIN_ORIGIN: item.source} if item.source else {},
+        )
+        built.append(Entry(moment=item.moment, row=row, origin=CHAIN_ORIGIN))
+    return built

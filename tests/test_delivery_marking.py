@@ -250,3 +250,17 @@ def test_a_decoded_row_marks_time_even_when_the_check_sees_no_disagreement():
     measured = timedelta(seconds=18)
     assert agree(ours, [written], measured).mismatched == frozenset()
     assert marks_for_shifted_time(ours, written) == {"C", "D"}
+
+
+# --- строка, найденная цепочкой по камере 1 -----------------------------------
+
+def test_a_chain_row_is_yellow_all_the_way():
+    """Машину видели только мы — спорна вся строка, а не отдельная графа.
+
+    Записи оператора у неё нет вовсе, второго свидетельства нет ни в одном
+    поле: та же величина утверждения, что у строки без записи (решение 070).
+    Покрасить в ней одну графу значило бы указать проверяющему не туда.
+    """
+    from paxcount.delivery.marking import marks_for_chain
+
+    assert marks_for_chain() == set(COLUMNS)

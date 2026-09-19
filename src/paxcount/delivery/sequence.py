@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from datetime import date as Date
 from datetime import datetime, timedelta
 from statistics import median
+from typing import Sequence
 
 from .agreement import Agreement
 from .model import DeliveryRow, Occupancy, VehicleKind, VehicleSize
@@ -51,9 +52,18 @@ class Decoded:
     agreement: Agreement
 
 
+# Откуда взялась строка. Источников три, и «не наша» больше не значит
+# «оператор»: машину, которую он не нажал, а мы не считали, приводит цепочка по
+# камере 1 (`chain.CHAIN_ORIGIN`). Книга обращается с ними по-разному —
+# красит, объясняет и считает замечания приёмки, — поэтому источник называется
+# словом, а не флагом.
+OUR_COUNT = "наш счёт"
+OPERATOR = "оператор"
+
+
 @dataclass(frozen=True)
 class Entry:
-    """Одна машина ленты. `decoded` — расшифровывали ли её мы.
+    """Одна машина ленты. `origin` — кто её сюда привёл.
 
     `repaired` — графы, которые мы починили за оператором. Молчаливая правка
     чужих данных недопустима: заказчик сверяет книгу с выгрузкой, видит
@@ -63,12 +73,17 @@ class Entry:
 
     moment: datetime
     row: DeliveryRow
-    decoded: bool
+    origin: str = OPERATOR
     record: OperatorRecord | None = None
     repaired: frozenset[str] = frozenset()
     # Итог сверки едет вместе со строкой, а не в карте по объекту: строку
     # заменяют (подстановка госномера делает новый объект), и карта рассыпается.
     agreement: Agreement | None = None
+
+    @property
+    def decoded(self) -> bool:
+        """Считали ли эту машину мы. Графы N и P книга проставляет остальным."""
+        return self.origin == OUR_COUNT
 
 
 def clock_shift(decoded: list[Decoded]) -> timedelta | None:
@@ -143,12 +158,17 @@ def merge(
     group: str,
     stop: str,
     operator: str,
+    extra: Sequence[Entry] = (),
 ) -> list[Entry]:
     """Лента смены: наши строки и записи оператора на одной шкале, по времени.
 
     Запись, которую наша строка уже нашла при сверке, второй строкой не
     становится: два рейса одного борта с разницей в семь минут — ровно та
     ошибка, за которую заказчик бракует файл.
+
+    `extra` — готовые строки из третьего источника (цепочка по К1). Они
+    вливаются здесь, а не приписываются к результату снаружи: место склейки
+    ленты одно, иначе порядок строк сложился бы дважды и по-разному.
     """
     if shift is None:
         raise ValueError(
@@ -158,16 +178,17 @@ def merge(
 
     taken = {id(d.agreement.record) for d in decoded if d.agreement.record is not None}
     entries = [
-        Entry(moment=d.moment, row=d.row, decoded=True,
+        Entry(moment=d.moment, row=d.row, origin=OUR_COUNT,
                record=d.agreement.record, agreement=d.agreement)
         for d in decoded
     ]
+    entries += list(extra)
     for r in records:
         if id(r) in taken:
             continue
         row, mended = _row_from_record(r, shift, group=group, stop=stop,
                                         operator=operator)
-        entries.append(Entry(moment=r.created + shift, row=row, decoded=False,
+        entries.append(Entry(moment=r.created + shift, row=row, origin=OPERATOR,
                               record=r, repaired=mended))
     return sorted(entries, key=lambda e: e.moment)
 
