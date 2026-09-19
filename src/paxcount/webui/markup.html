@@ -524,14 +524,21 @@ async function setFacing(f, motion) {
 
 // ---- Рисование -------------------------------------------------------------
 
+// Размер кадра ЗАПИСИ, а не пришедшей картинки. На проигрывании кадр ужимается
+// ради скорости, и если считать по нему, меняется всё разом: масштаб — на
+// глазах, а координаты разметки — молча. Двери хранятся в пикселях записи
+// (`frame_size` при сохранении), и система координат обязана быть той же.
+function frameW() { return S.file ? S.file.width : (S.img ? S.img.width : 0); }
+function frameH() { return S.file ? S.file.height : (S.img ? S.img.height : 0); }
+
 function fitScale() {
-  return S.img ? Math.min(cv.width / S.img.width, cv.height / S.img.height) : 1;
+  return S.img ? Math.min(cv.width / frameW(), cv.height / frameH()) : 1;
 }
 
 function fitView() {
   if (!S.img) return;
   const k = fitScale();
-  S.view = {k, x:(cv.width - S.img.width*k)/2, y:(cv.height - S.img.height*k)/2};
+  S.view = {k, x:(cv.width - frameW()*k)/2, y:(cv.height - frameH()*k)/2};
   draw();
 }
 
@@ -540,7 +547,7 @@ function fitView() {
 // панели среди восьми кнопок навигации.
 function clampView() {
   if (!S.img) return;
-  const w = S.img.width * S.view.k, h = S.img.height * S.view.k;
+  const w = frameW() * S.view.k, h = frameH() * S.view.k;
   const keep = Math.min(120 * devicePixelRatio, w * 0.5, h * 0.5);
   S.view.x = Math.max(-w + keep, Math.min(cv.width - keep, S.view.x));
   S.view.y = Math.max(-h + keep, Math.min(cv.height - keep, S.view.y));
@@ -585,7 +592,7 @@ function rect(b, color, label) {
 function margins(b) {
   if (!S.img) return '';
   const left = Math.round(b[0]);
-  const right = Math.round(S.img.width - b[2]);
+  const right = Math.round(frameW() - b[2]);
   const mark = v => v === 0 ? 'край' : v + ' px';
   return `слева ${mark(left)} · справа ${mark(right)}`;
 }
@@ -598,7 +605,8 @@ function draw() {
   if (!S.img) return;
   const {k,x,y} = S.view;
   ctx.imageSmoothingEnabled = k < 2;
-  ctx.drawImage(S.img, x, y, S.img.width*k, S.img.height*k);
+  // Ужатый кадр растягивается до размера записи — потому размер и не скачет.
+  ctx.drawImage(S.img, x, y, frameW()*k, frameH()*k);
   if (S.body) rect(S.body, '#4aa3ff', 'кузов · ' + margins(S.body));
   S.doors.forEach((d, i) => {
     if (d.opening_px) rect(d.opening_px, '#4ade80', 'дверь ' + d.n_from_nose);
@@ -631,8 +639,8 @@ window.addEventListener('mousemove', ev => {
   // Обрезка по кадру: за его границей нет ни кузова, ни двери, а координаты
   // оттуда уходили в разметку и делали её шире кадра (найдено на первом
   // размеченном визите: кузов до 2023 px при ширине 1920).
-  const cx = v => Math.max(0, Math.min(S.img.width, v));
-  const cy = v => Math.max(0, Math.min(S.img.height, v));
+  const cx = v => Math.max(0, Math.min(frameW(), v));
+  const cy = v => Math.max(0, Math.min(frameH(), v));
   S.drag.box = [cx(Math.min(S.drag.x0,p.x)), cy(Math.min(S.drag.y0,p.y)),
                 cx(Math.max(S.drag.x0,p.x)), cy(Math.max(S.drag.y0,p.y))]
                 .map(v => Math.round(v*10)/10);

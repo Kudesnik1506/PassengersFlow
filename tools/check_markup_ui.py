@@ -69,6 +69,7 @@ def check(page, size) -> list[str]:
         page.wait_for_timeout(250)
 
     bad += check_seek(page, size)
+    bad += check_playback_size(page, size)
 
     # Сворачиваем заново перед проверкой памяти: мастер разворачивает панели
     # сам, когда шаг показывает на свёрнутое, и это правильно — проверять
@@ -121,6 +122,34 @@ def check_seek(page, size) -> list[str]:
     part = page.evaluate("S.frame / (S.file.frames - 1)")
     if not 0.05 < part < 0.15:
         bad.append(f"{size}: щелчок по десятой доле полосы привёл на {part:.0%} записи")
+    return bad
+
+
+def check_playback_size(page, size) -> list[str]:
+    """Кадр не меняет размера на проигрывании.
+
+    На ходу кадр запрашивается ужатым — так он успевает прийти к сроку. Но
+    рисовался он по собственной ширине, и картинка на пуске скакала вдвое
+    меньше, а на остановке возвращалась. Смотреть на это нельзя: глаз ловит
+    прыжок, а не машину в кадре.
+
+    Хуже другое, невидимое: к той же ширине привязаны координаты разметки.
+    Кадр записи 1920 px, превью 1280 — обведённая на превью дверь уехала бы в
+    полтора раза.
+    """
+    bad: list[str] = []
+    page.evaluate("showFrame(600)")
+    page.wait_for_timeout(1200)
+    было = page.evaluate("[S.view.k, frameW(), frameH()]")
+
+    page.click("[data-play='10']")
+    page.wait_for_timeout(1500)
+    стало = page.evaluate("[S.view.k, frameW(), frameH()]")
+    page.keyboard.press(" ")
+    page.wait_for_timeout(800)
+
+    if стало != было:
+        bad.append(f"{size}: на проигрывании кадр сменил размер {было} -> {стало}")
     return bad
 
 
