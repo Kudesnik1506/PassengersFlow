@@ -20,7 +20,7 @@ from pathlib import Path
 from pydantic import BaseModel, model_validator
 
 from .delivery.model import DOORS_BY_SIZE, VehicleSize
-# Импорт, а не копия (запрет 9): тот же порог решает тот же вопрос в
+# Импорт, а не копия (запрет 8): тот же порог решает тот же вопрос в
 # автопредложении — можно ли объявить дверь за кадром (решение 038).
 from .settings import EDGE_TOUCH_PX
 

@@ -31,7 +31,7 @@ MANIFEST_NAME = "задание.json"
 
 
 class FramesOutsideOutDirError(RuntimeError):
-    """Попытка записать кадры вне `out/` — запрет 7."""
+    """Попытка записать кадры вне `out/` — запрет 6."""
 
 
 @dataclass(frozen=True)
@@ -61,7 +61,7 @@ def write_packages(
     Вызывающий не может расширить разрешённое место, он может только назвать
     каталог внутри него.
     """
-    _refuse_outside(root, out_dir)
+    refuse_outside(root, out_dir)
 
     written: list[WrittenPackage] = []
     for package in packages:
@@ -114,12 +114,12 @@ def frame_name(t: float) -> str:
     return f"t{t:06.2f}.jpg"
 
 
-def _refuse_outside(root: Path, out_dir: Path) -> None:
+def refuse_outside(root: Path, out_dir: Path) -> None:
     root_abs = Path(root).resolve()
     allowed = Path(out_dir).resolve()
     if root_abs != allowed and allowed not in root_abs.parents:
         raise FramesOutsideOutDirError(
-            f"кадры пишутся только под {allowed}, а не в {root_abs} — запрет 7"
+            f"кадры пишутся только под {allowed}, а не в {root_abs} — запрет 6"
         )
 
 

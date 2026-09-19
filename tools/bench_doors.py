@@ -87,14 +87,14 @@ def export_frames(doors_dir: Path, target: Path) -> int:
 
     Нужны там, где метод отвечает не кодом: мультимодальная модель смотрит на
     эти же кадры в сессии, а не по API (ключа у проекта нет). Кадры пишутся
-    только под `out/`, который закрыт в .gitignore: запрет 7 — кадры не
+    только под `out/`, который закрыт в .gitignore: запрет 6 — кадры не
     публикуются ни в репозиторий, ни в артефакты.
     """
     import cv2
 
     if OUT_DIR.resolve() not in target.resolve().parents and target.resolve() != OUT_DIR.resolve():
         console.print(f"[red]выгрузка разрешена только под {OUT_DIR}/[/red] — "
-                       "кадры содержат лица и номера машин (запрет 7)")
+                       "кадры содержат лица и номера машин (запрет 6)")
         return 2
 
     cases, skipped = load_cases(doors_dir, cameras=COUNTING_CAMERAS)

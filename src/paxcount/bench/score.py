@@ -22,7 +22,7 @@ from dataclasses import dataclass
 
 from ..settings import CROP_MARGIN_PX
 
-# Импорт, а не копия (запрет 9): это тот же запас, с которым режется кроп.
+# Импорт, а не копия (запрет 8): это тот же запас, с которым режется кроп.
 DEFAULT_MARGIN_PX = CROP_MARGIN_PX
 
 Box = tuple[float, float, float, float]
