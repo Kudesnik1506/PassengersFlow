@@ -55,3 +55,20 @@ def test_a_frame_already_read_is_sought_again():
 def test_a_closed_file_is_always_sought():
     """Курсора нет — сравнивать не с чем, и читать неоткуда."""
     assert reads_forward(position=None, frame=0) is False
+
+
+def test_the_listing_keeps_a_camera_that_does_not_count():
+    """Камера 1 в списке есть, но помечена: по ней не считают.
+
+    Решение 030 запрещает счёт по К1 — двери от неё отвёрнуты, а стоящий
+    автобус занимает 76x44 px. Оно же называет её незаменимой для другого: с
+    её кадра читается бортовой номер и виден порядок в очереди. Убрав её с
+    экрана, мы закрыли и это — а смотреть запись требуется.
+
+    Признак едет рядом со строкой, потому что разметка дверей по такой записи
+    всё равно бессмысленна, и человек обязан видеть это до того, как начнёт.
+    """
+    from paxcount.webui.markup import listing_row
+
+    assert listing_row({"camera": "1", "stem": "запись"})["counts"] is False
+    assert listing_row({"camera": "2", "stem": "запись"})["counts"] is True

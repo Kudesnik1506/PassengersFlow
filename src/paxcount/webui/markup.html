@@ -52,6 +52,17 @@
   .bar { display:flex; gap:6px; align-items:center; padding:8px;
          border-top:1px solid var(--line); background:var(--panel);
          flex-wrap:wrap; }
+  /* Полоса просмотренного: на проигрывании по ней видно ход, не читая цифр. */
+  #seen { height:4px; background:var(--line); flex:none; }
+  #seenfill { height:100%; width:0; background:var(--accent); transition:width .12s linear; }
+  #progress { font-variant-numeric:tabular-nums; }
+  /* Заголовок камеры — кнопка: список трёх камер за смену длиннее экрана. */
+  aside h2.group { cursor:pointer; user-select:none; display:flex;
+                   align-items:center; gap:6px; }
+  aside h2.group:hover { color:var(--ink); }
+  .arrow { display:inline-block; width:10px; color:var(--dim); }
+  .nocount { border:1px solid var(--line); border-radius:4px; padding:0 5px;
+             font-size:10px; color:var(--dim); font-weight:400; }
   button { background:#2a3039; color:var(--ink); border:1px solid var(--line);
            border-radius:5px; padding:4px 9px; cursor:pointer; font-size:12px; }
   button:hover { background:#343c47; }
@@ -150,7 +161,6 @@
     <h2>Записи</h2>
     <input id="filter" placeholder="фильтр по имени">
     <div id="files" style="margin-top:6px"></div>
-    <div id="excluded" class="muted" style="margin-top:10px"></div>
   </div>
 </aside>
 
@@ -177,6 +187,7 @@
     <span style="flex:1"></span>
     <span class="times" id="clock">—</span>
   </div>
+  <div id="seen" title="Сколько записи позади"><div id="seenfill"></div></div>
   <div class="bar" id="playbar">
     <button data-play="-30" title="Назад в 30 раз быстрее">◀◀ 30</button>
     <button data-play="-10" title="Назад в 10 раз быстрее">◀ 10</button>
@@ -188,6 +199,7 @@
     <button data-play="10" title="Вперёд в 10 раз быстрее">10 ▶</button>
     <button data-play="30" title="Вперёд в 30 раз быстрее">30 ▶▶</button>
     <span class="muted" id="playstate">стоп</span>
+    <span id="progress" title="Позади записи и сколько её осталось">—</span>
     <span class="muted" style="margin-left:auto"
           title="Версия экрана на сервере">пробел — пуск и стоп · экран от {{ВЕРСИЯ}}</span>
   </div>
@@ -266,12 +278,8 @@ async function loadFiles() {
   const r = await fetch('/api/markup/files').then(r => r.json());
   S.files = r.files; S.layouts = r.layouts;
   renderFiles(); renderSaved();
-  // Камера, убранная из списка нарочно, должна быть названа: иначе её
-  // отсутствие читается как сбой.
-  $('excluded').textContent = (r.excluded && r.excluded.length)
-    ? `Камера ${r.excluded.join(', ')} не показана: она опознаёт машины, но не `
-      + `считает — разметка дверей ей не нужна.`
-    : '';
+  // Камеры теперь показываются все, а несчётная помечена в своём заголовке:
+  // отдельная строка внизу списка объясняла отсутствие того, что есть.
 }
 
 function renderSaved() {
@@ -299,27 +307,58 @@ async function openSaved(l) {
   fitView();
 }
 
+// Камера сворачивается целиком: за смену их три по два десятка файлов, и
+// нужный кусок ищется прокруткой через чужие записи. Состояние держится между
+// заходами — сворачивать заново при каждом открытии было бы данью.
+function cameraOff(camera) {
+  try { return localStorage.getItem('markup.camera.' + camera) === 'off'; }
+  catch (e) { return false; }
+}
+
+function setCamera(camera, off) {
+  try { localStorage.setItem('markup.camera.' + camera, off ? 'off' : 'on'); }
+  catch (e) {}
+  renderFiles();
+}
+
 function renderFiles() {
   const q = $('filter').value.trim().toLowerCase();
   const box = $('files'); box.innerHTML = '';
-  let camera = null;
+  const groups = new Map();
   for (const f of S.files) {
     if (q && !f.name.toLowerCase().includes(q)) continue;
-    if (f.camera !== camera) {
-      camera = f.camera;
-      const h = document.createElement('h2');
-      h.textContent = 'Камера ' + (camera || '—');
-      box.appendChild(h);
+    if (!groups.has(f.camera)) groups.set(f.camera, []);
+    groups.get(f.camera).push(f);
+  }
+  for (const [camera, files] of groups) {
+    // Поиск разворачивает найденное сам: свёрнутая группа с совпадением
+    // выглядела бы как «ничего не нашлось».
+    const off = q ? false : cameraOff(camera);
+    const h = document.createElement('h2');
+    h.className = 'group';
+    h.innerHTML = `<span class="arrow">${off ? '▸' : '▾'}</span>`
+      + `Камера ${camera || '—'} <span class="muted">${files.length}</span>`
+      + (files[0].counts === false
+          ? ' <span class="nocount">без счёта</span>' : '');
+    h.title = files[0].counts === false
+      ? 'Двери от этой камеры отвёрнуты, счёт по ней не ведётся (решение 030).\n'
+        + 'Запись открывается и проигрывается: по ней читают бортовой номер\n'
+        + 'и видят порядок машин в очереди.'
+      : 'Свернуть или развернуть камеру';
+    h.onclick = () => setCamera(camera, !off);
+    box.appendChild(h);
+    if (off) continue;
+    for (const f of files) {
+      const d = document.createElement('div');
+      d.className = 'file' + (S.file && S.file.stem === f.stem ? ' on' : '');
+      const short = f.stem.replace(/^\d{4}-\d{2}-\d{2}\s*-\s*/, '');
+      const n = S.layouts.filter(l => l.video === f.stem).length;
+      d.innerHTML = short + (n ? ` <span class="mark">${n}</span>` : '');
+      d.title = f.name + '\n' + f.width + '×' + f.height + ', ' +
+                f.fps + ' fps, ' + f.frames + ' кадров';
+      d.onclick = () => openFile(f);
+      box.appendChild(d);
     }
-    const d = document.createElement('div');
-    d.className = 'file' + (S.file && S.file.stem === f.stem ? ' on' : '');
-    const short = f.stem.replace(/^\d{4}-\d{2}-\d{2}\s*-\s*/, '');
-    const n = S.layouts.filter(l => l.video === f.stem).length;
-    d.innerHTML = short + (n ? ` <span class="mark">${n}</span>` : '');
-    d.title = f.name + '\n' + f.width + '×' + f.height + ', ' +
-              f.fps + ' fps, ' + f.frames + ' кадров';
-    d.onclick = () => openFile(f);
-    box.appendChild(d);
   }
 }
 
@@ -340,9 +379,23 @@ async function openFile(f) {
 // перезапрашивает тот же кадр целиком — размечают уже по нему.
 const PREVIEW = 'width=1280&quality=80';
 
+// Сколько записи позади. На проигрывании это единственное, по чему видно, где
+// ты в файле: номер кадра растёт, а много это или мало — из него не следует.
+function updateSeen() {
+  if (!S.file || !S.file.frames) return;
+  const done = S.frame / (S.file.frames - 1);
+  $('seenfill').style.width = (done * 100).toFixed(2) + '%';
+  // Округляем раньше деления: 1499.6 секунды по частям дают «24:60».
+  const left = Math.round((S.file.frames - 1 - S.frame) / S.file.fps);
+  const mm = Math.floor(left / 60), ss = left % 60;
+  $('progress').innerHTML = `<b>${(done * 100).toFixed(1)}%</b>`
+    + ` <span class="muted">осталось ${mm}:${String(ss).padStart(2, '0')}</span>`;
+}
+
 function showFrame(n, preview) {
   if (!S.file) return Promise.resolve();
   S.frame = Math.max(0, Math.min(S.file.frames - 1, Math.round(n)));
+  updateSeen();
   return new Promise(res => {
     const img = new Image();
     img.onload = () => { S.img = img; draw(); res(); };
