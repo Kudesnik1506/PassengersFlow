@@ -25,6 +25,7 @@ import argparse
 import csv
 import json
 import sys
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -46,12 +47,16 @@ IDENTIFY_DIR = OUT_DIR / "identify"
 FRAMES_DIR = IDENTIFY_DIR / "кадры"
 CHAIN_DIR = OUT_DIR / "chain"
 
-# «Часы К1 минус часы К2»: К1 стоит выше по ходу, машина доезжает до кармана
-# почти шесть минут. Подгоняется выравниванием, здесь — затравка.
-K1_TO_K2_S = -351.0
-# Насколько проезд и стоянка расходятся сверх сдвига. Шире окна — уже соседняя
+# Насколько проезд и стоянка расходятся на ОБЩЕЙ шкале. Часы камер сведены
+# замеренными поправками (`data/clocks`), поэтому сдвига между ними больше нет,
+# остаётся ход машины от К1 до кармана и разброс. Шире окна — уже соседняя
 # машина: на остановке они идут раз в 80–120 с.
-WINDOW_S = 60.0
+WINDOW_S = 90.0
+# Пустота в стоянках, после которой считается, что счётные камеры ослепли.
+# Машины идут через 80–120 с, поэтому три минуты тишины — не затишье.
+BLIND_SPAN_S = 180.0
+# Счётные камеры: обе смотрят карман, и подтвердить стоянку может любая.
+COUNTING = ("2", "3")
 # Запас вокруг рамки в кропе: номер бывает у самого края кузова.
 MARGIN_PX = 80
 # Насколько близко должна стоять строка книги с тем же номером, чтобы считать
@@ -85,6 +90,34 @@ def _day_of(value: str):
         return EXCEL_EPOCH + timedelta(days=int(float(text)))
     except ValueError:
         return None
+
+
+def camera_scale() -> dict[str, tuple[float, object]]:
+    """Поправка часов и настоящая дата — на камеру, а не на файл.
+
+    Поправка на файл есть у одной записи из двадцати двух (`data/clocks`), а
+    смена снята сплошняком (решение 027), поэтому для сведения шкал берётся
+    поправка камеры. У К3 в именах файлов стоит август вместо сентября — дата
+    чинится тем же `date_override`.
+    """
+    from paxcount.delivery import clocks
+
+    scale: dict[str, tuple[float, object]] = {}
+    for record in clocks.load(DATA_DIR / "clocks" / "22739.csv"):
+        scale.setdefault(record.camera,
+                          (record.offset_to_reference_s, record.date_override))
+    return scale
+
+
+def to_scale(moment: datetime, camera: str,
+              scale: dict[str, tuple[float, object]]) -> datetime:
+    """Час камеры — на общую шкалу смены."""
+    offset, real_day = scale.get(camera, (0.0, None))
+    if real_day:                       # у К3 в именах файлов август вместо сентября
+        day = (real_day if hasattr(real_day, "year")
+                else datetime.strptime(str(real_day), "%Y-%m-%d").date())
+        moment = datetime.combine(day, moment.time())
+    return moment - timedelta(seconds=offset)
 
 
 def sightings_of(stop: str, camera: str) -> list[Sighting]:
@@ -146,6 +179,14 @@ def unclaimed(stop: str, camera: str, book: Path) -> list[Sighting]:
     return [s for s in seen if (s.start, s.end) not in taken]
 
 
+def on_scale(sightings: list[Sighting], camera: str, scale) -> list[Sighting]:
+    """Те же стоянки, но на общей шкале смены."""
+    return [Sighting(start=to_scale(s.start, camera, scale),
+                     end=to_scale(s.end, camera, scale),
+                     box=s.box, frame_size=s.frame_size)
+             for s in sightings]
+
+
 def frame_of(candidate: Candidate) -> tuple[bytes, tuple[float, float, float, float]] | None:
     """Кроп вокруг машины из кадра максимальной рамки."""
     import cv2
@@ -175,31 +216,64 @@ def frame_of(candidate: Candidate) -> tuple[bytes, tuple[float, float, float, fl
 
 
 def export(args) -> int:
+    from paxcount.delivery.chain import blind_windows
+
     refuse_outside(FRAMES_DIR, OUT_DIR)
     FRAMES_DIR.mkdir(parents=True, exist_ok=True)
-    free = unclaimed(args.stop, args.camera, args.book)
-    orphans = orphan_passages(args.stop)
-    found = candidates(orphans, free,
-                        shift=timedelta(seconds=K1_TO_K2_S),
-                        window=timedelta(seconds=WINDOW_S))
+    scale = camera_scale()
+
+    # Стоянку подтверждает любая счётная камера: таблица К2 неполна (42 файла
+    # из 48), и требовать подтверждения именно от неё значит терять машины там,
+    # где она ослепла.
+    free: list[Sighting] = []
+    all_stops: list[datetime] = []
+    for camera in COUNTING:
+        seen = sightings_of(args.stop, camera)
+        if not seen:
+            console.print(f"[yellow]стоянок камеры {camera} нет — "
+                           "подтверждать нечем[/yellow]")
+            continue
+        all_stops += [to_scale(s.start, camera, scale) for s in seen]
+        free += on_scale(unclaimed(args.stop, camera, args.book), camera, scale)
+
+    blind = blind_windows(all_stops, span=timedelta(seconds=BLIND_SPAN_S))
+    # Сопоставление идёт на общей шкале, а кадр режется по часам своей камеры:
+    # перемотка записи ведётся по ним, и подменять их шкалой нельзя.
+    свои = orphan_passages(args.stop)
+    сырое = {(p.file, p.track): p for p in свои}
+    orphans = [replace(p,
+                        start=to_scale(p.start, "1", scale),
+                        end=to_scale(p.end, "1", scale),
+                        peak=to_scale(p.peak, "1", scale))
+                for p in свои]
+    found = candidates(orphans, free, shift=timedelta(0),
+                        window=timedelta(seconds=WINDOW_S), blind=blind)
     console.print(f"ничьих проездов {len(orphans)}, стоянок без строки {len(free)}, "
-                   f"кандидатов {len(found)}")
+                   f"слепых окон {len(blind)}, кандидатов {len(found)}")
 
     tasks = []
     for candidate in found:
+        candidate = replace(candidate,
+                             passage=сырое[(candidate.passage.file,
+                                             candidate.passage.track)])
         cut = frame_of(candidate)
         if cut is None:
             console.print(f"[yellow]{candidate.passage.peak:%H:%M:%S}: кадр не достался[/yellow]")
             continue
         image, box = cut
-        name = f"К1-{candidate.passage.peak:%H-%M-%S}.jpg"
+        # Трек в имени обязателен: два соседних проезда дают один и тот же
+        # момент пика, и без него второй кадр затирает первый.
+        name = f"К1-{candidate.passage.peak:%H-%M-%S}-т{candidate.passage.track}.jpg"
         (FRAMES_DIR / name).write_bytes(image)
         tasks.append({
             "кадр": name,
             "проезд": candidate.passage.peak.isoformat(),
             "файл": candidate.passage.file,
             "трек": candidate.passage.track,
-            "стоянка_К2": candidate.sighting.start.isoformat(),
+            "стоянка": (candidate.sighting.start.isoformat()
+                         if candidate.sighting else ""),
+            "на_шкале": to_scale(candidate.passage.peak, "1", scale).isoformat(),
+            "оговорка": candidate.note,
             "кроп": box,
         })
     (IDENTIFY_DIR / "задание.json").write_text(
@@ -248,12 +322,17 @@ def book_rows(book: Path, camera: str) -> list[tuple[datetime, str]]:
 
 
 def apply(args) -> int:
-    from paxcount.counting.identify import agreed_identity
+    from paxcount.counting.identify import agreed_identity, public_kind
     from paxcount.delivery.chain import already_known
     from paxcount.delivery.model import VehicleKind
 
     tasks = json.loads((IDENTIFY_DIR / "задание.json").read_text(encoding="utf-8"))
-    written = book_rows(args.book, args.camera)
+    # Строки книги приводятся к общей шкале: сверка идёт на ней, а графа P
+    # хранит часы своей камеры.
+    scale = camera_scale()
+    written = [(to_scale(moment, camera, scale), number)
+                for camera in COUNTING
+                for moment, number in book_rows(args.book, camera)]
     runs = read_answers()
     if not runs:
         console.print("[red]ответов нет — сначала прогоны по кадрам[/red]")
@@ -273,7 +352,8 @@ def apply(args) -> int:
         agreed, why = agreed_identity(answers)
         row = {
             "кадр": task["кадр"], "проезд": task["проезд"],
-            "стоянка_К2": task["стоянка_К2"], "прогонов": len(answers),
+            "стоянка": task.get("стоянка", ""), "на_шкале": task["на_шкале"],
+            "оговорка": task.get("оговорка", ""), "прогонов": len(answers),
             "вид": agreed.kind or "", "борт": agreed.board_number or "",
             "госномер_с_кадра": agreed.state_number or "",
             "маршрут_с_кадра": agreed.route or "",
@@ -284,7 +364,7 @@ def apply(args) -> int:
         if portal is not None and agreed.board_number:
             kind = VehicleKind.BUS
             found = portal.lookup(agreed.board_number, args.date, kind,
-                                   at=datetime.fromisoformat(task["стоянка_К2"]))
+                                   at=datetime.fromisoformat(task["на_шкале"]))
             if getattr(found, "route", None):
                 row["маршрут_портала"] = found.route or ""
                 row["госномер_портала"] = found.state_number or ""
@@ -295,8 +375,11 @@ def apply(args) -> int:
         # Последняя проверка: не записан ли этот заезд оператором. Выравнивание
         # ошибается, и четыре кандидата из двенадцати на боевом утре оказались
         # уже стоящими в книге — вторая строка на тот же заезд бракует файл.
+        # Грузовой фургон в книгу не идёт: она про общественный транспорт.
+        if agreed.kind and public_kind(agreed.kind) is None:
+            row["уже_в_книге"] = "не ОТ"
         номер = row["госномер_портала"] or row["борт"]
-        if номер and already_known(datetime.fromisoformat(task["стоянка_К2"]),
+        if номер and already_known(datetime.fromisoformat(task["на_шкале"]),
                                     номер, written,
                                     window=timedelta(seconds=DUPLICATE_WINDOW_S)):
             row["уже_в_книге"] = "да"
@@ -316,12 +399,14 @@ def apply(args) -> int:
 
     known = sum(1 for r in rows if r["борт"])
     routed = sum(1 for r in rows if r["маршрут_портала"] or r["маршрут_с_кадра"])
-    dupes = sum(1 for r in rows if r["уже_в_книге"])
+    dupes = sum(1 for r in rows if r["уже_в_книге"] == "да")
+    alien = sum(1 for r in rows if r["уже_в_книге"] == "не ОТ")
     console.print(f"кандидатов {len(rows)}, борт согласован у {known}, "
                    f"маршрут известен у {routed}")
     console.print(f"[yellow]уже стоят в книге: {dupes} — оператор их записал, "
                    "выравнивание не спарило[/yellow]")
-    console.print(f"новых строк выйдет: {len(rows) - dupes}")
+    console.print(f"не общественный транспорт: {alien}")
+    console.print(f"новых строк выйдет: {len(rows) - dupes - alien}")
     console.print(f"[dim]{path}[/dim]")
     return 0
 

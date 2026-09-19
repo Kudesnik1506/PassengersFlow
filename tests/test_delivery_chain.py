@@ -205,3 +205,40 @@ def test_another_vehicle_at_the_same_minute_does_not_block_the_row():
 def test_without_a_number_nothing_can_be_told_apart():
     """Безымянную строку по номеру не проверить — и выдавать её за проверенную нельзя."""
     assert already_known(t(0), "", [(t(0), "")], window=timedelta(seconds=180)) is False
+
+
+# --- Слепое окно: стоянку не показала ни одна счётная камера ----------------
+
+
+def test_a_second_camera_confirms_what_the_first_missed():
+    """Стоянку подтверждает любая счётная камера, а не только К2.
+
+    Таблица стоянок К2 неполна: 42 файла из 48, а в одном из них шесть минут
+    подряд нет ни одного визита при идущей записи. Требовать подтверждения
+    именно от неё значит терять машины там, где она ослепла.
+    """
+    found = candidates([passage(0)], [], blind=[(t(-30), t(30))],
+                        shift=timedelta(0), window=timedelta(seconds=60))
+    assert len(found) == 1 and found[0].sighting is None
+
+
+def test_a_blind_window_row_says_so():
+    """Строка из слепого окна говорит о себе: стоянка не подтверждена.
+
+    Это утверждение слабее прочих, и человек должен видеть, какое именно.
+    """
+    found = candidates([passage(0)], [], blind=[(t(-30), t(30))],
+                        shift=timedelta(0), window=timedelta(seconds=60))
+    assert "не подтверждена" in found[0].note
+
+
+def test_outside_a_blind_window_a_stop_is_still_required():
+    """Камеры смотрели и стоянки не увидели — значит машина проехала мимо."""
+    assert candidates([passage(0)], [], blind=[(t(600), t(900))],
+                       shift=timedelta(0), window=timedelta(seconds=60)) == []
+
+
+def test_a_confirmed_stop_needs_no_excuse():
+    found = candidates([passage(0)], [stop_at(0)], blind=[(t(-30), t(30))],
+                        shift=timedelta(0), window=timedelta(seconds=60))
+    assert found[0].sighting is not None and found[0].note == ""

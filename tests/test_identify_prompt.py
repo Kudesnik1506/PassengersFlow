@@ -93,8 +93,9 @@ def test_size_is_not_asked_of_camera_one():
     выдумка в графе J неотличима от чтения.
     """
     text = build_identify_prompt(ask_size=False)
-    assert "двер" not in text.lower()
-    assert "size" not in text
+    assert "size" not in text, "поля размера в ответе быть не должно"
+    assert "размер" not in text.lower(), "и просить его словами тоже нельзя"
+    assert "по числу дверей" not in text, "правило размера по дверям сюда не идёт"
     assert "board_number" in text, "борт с К1 читается — ради него всё и затевается"
 
 
@@ -129,3 +130,37 @@ def test_an_answer_is_read_out_of_the_noise_around_it():
                           ' "state_number": null, "route": "50", "doubts": ""}\nГотово.')
     assert (got.kind, got.board_number, got.route) == ("Автобус", "1596", "50")
     assert got.state_number is None
+
+
+def test_the_route_is_looked_for_beyond_the_headsign():
+    """Номер маршрута висит не только на табло.
+
+    Боевой кадр: оба прогона написали «табло тёмное, номер не разобрать», а
+    номер маршрута был нанесён трафаретом на двери — туда они не посмотрели,
+    потому что промпт послал их на табло. Машину опознали по борту через
+    портал, но маршрут потеряли на ровном месте.
+    """
+    text = build_identify_prompt(ask_size=False)
+    assert "трафарет" in text.lower()
+    assert "в окне" in text.lower() or "в стекле" in text.lower()
+
+
+def test_a_lorry_is_not_a_row_in_the_book():
+    """Грузовик в книгу не идёт: она про общественный транспорт.
+
+    Детектор ищет крупные кузова и приводит заодно фургоны — на боевом утре
+    один такой дошёл до опознания. Вид вне словаря заказчика означает, что
+    строки нет вовсе: подставить «Автобус» значит соврать в графе F.
+    """
+    from paxcount.counting.identify import public_kind
+
+    assert public_kind("Грузовик") is None
+    assert public_kind("Грузовой автомобиль (фургон)") is None
+
+
+def test_the_customers_words_are_the_only_vocabulary():
+    from paxcount.counting.identify import public_kind
+    from paxcount.delivery.model import VehicleKind
+
+    assert public_kind("Автобус") is VehicleKind.BUS
+    assert public_kind("") is None

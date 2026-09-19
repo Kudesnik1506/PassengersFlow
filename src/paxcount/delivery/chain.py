@@ -222,10 +222,18 @@ class Candidate:
     `passage` говорит, КТО это (с кадра читается борт), `sighting` — что она
     ОСТАНОВИЛАСЬ. По отдельности ни того ни другого мало: К1 снимает и тех, кто
     остановку минует, а стоянка сама по себе безымянна (решение 003).
+
+    `sighting is None` — стоянку не показала ни одна счётная камера, но и
+    смотреть в этот момент было нечем: обе молчали. Такая строка заводится с
+    оговоркой в `note`, и оговорка эта едет в книгу словами.
     """
 
     passage: Passage
-    sighting: "Sighting"
+    sighting: "Sighting | None"
+    note: str = ""
+
+
+NO_STOP_NOTE = "стоянка не подтверждена: счётные камеры в этот момент молчали"
 
 
 def candidates(orphans: Sequence[Passage],
@@ -233,18 +241,24 @@ def candidates(orphans: Sequence[Passage],
                 *,
                 shift: timedelta,
                 window: timedelta,
+                blind: Sequence[tuple[datetime, datetime]] = (),
                 min_width: float = MIN_CANDIDATE_PX,
                 ) -> list[Candidate]:
     """Пропущенные машины: ничей проезд рядом с ничьей стоянкой.
 
     `shift` — «часы проезда минус часы стоянки», `window` — насколько они
-    расходятся сверх него.
+    расходятся сверх него. `free` — стоянки ЛЮБОЙ счётной камеры, у которых нет
+    своей строки, уже приведённые к шкале проезда.
+
+    `blind` — окна, где счётные камеры не показали ни одной стоянки вовсе.
+    Там подтверждения требовать не с чего: таблица стоянок К2 неполна (42 файла
+    из 48, и шесть минут подряд без единого визита при идущей записи), и
+    требование подтверждения теряло бы машины именно там, где смотреть нечем.
 
     Стоянке достаётся ОДИН проезд, ближайший по времени: разорванный трек даёт
     два проезда на одну машину, и обе строки ушли бы в книгу как два заезда.
     """
-    близкие = [p for p in orphans
-                if p.box[2] - p.box[0] >= min_width]
+    близкие = [p for p in orphans if p.box[2] - p.box[0] >= min_width]
     found: list[Candidate] = []
     for stop in sorted(free, key=lambda s: s.start):
         подходят = [p for p in близкие
@@ -256,7 +270,25 @@ def candidates(orphans: Sequence[Passage],
                          key=lambda p: abs((p.peak - stop.start - shift).total_seconds()))
         близкие = [p for p in близкие if p is not ближайший]
         found.append(Candidate(passage=ближайший, sighting=stop))
-    return found
+
+    for passage in близкие:                  # остались без стоянки
+        if any(start <= passage.peak <= end for start, end in blind):
+            found.append(Candidate(passage=passage, sighting=None, note=NO_STOP_NOTE))
+    return sorted(found, key=lambda c: c.passage.peak)
+
+
+def blind_windows(stops: Sequence[datetime],
+                   *,
+                   span: timedelta,
+                   ) -> list[tuple[datetime, datetime]]:
+    """Промежутки между стоянками длиннее `span` — там камеры ничего не дали.
+
+    Машины идут через 80–120 секунд, поэтому пустота в несколько минут это не
+    затишье на остановке, а слепота счёта.
+    """
+    порядок = sorted(stops)
+    return [(a, b) for a, b in zip(порядок, порядок[1:])
+             if (b - a) >= span]
 
 
 def already_known(moment: datetime,
