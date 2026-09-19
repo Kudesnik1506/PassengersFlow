@@ -12,7 +12,10 @@
 * **не затирать** — бортовой из строки не исчезает: он единственный ключ, по
   которому спор о машине потом разбирается;
 * **не молчать** — маршрут портала, не совпавший с нашим, это расхождение, а не
-  повод подменить одно другим.
+  повод подменить одно другим; а отказ портала объясняется в самой книге, в
+  графе комментария. Заказчик видит в графе номера бортовой вместо
+  государственного и вправе знать почему: на 295 строках таких девять
+  (решение 076, дополнено 18.09).
 
 Сеть сюда не входит: `ask` передаётся снаружи. Так тесты идут без обращения к
 государственному порталу, а ответы с реальными номерами не попадают в
@@ -28,6 +31,19 @@ from ..portal import Answer, NotFound, VehicleInfo
 from .model import KINDS_NEEDING_STATE_NUMBER, DeliveryRow
 
 Ask = Callable[[str, str, object, datetime], Answer]
+
+
+def _unknown_plate_note(board: str | None, moment: datetime) -> str:
+    """Объяснение для графы комментария: почему в номере стоит бортовой.
+
+    Словами и с датой: портал отвечает на КОНКРЕТНЫЙ день (`PortalClient.lookup`),
+    и «нет в базе» без даты читалось бы как «машины не существует».
+
+    Кодом это быть не может: графа M проверяется по таблице 2, а таблица 2 — про
+    двери в кадре. Текст уживается с кодом в одной клетке через `comment_cell`.
+    """
+    return (f"госномер не найден: борт {board} порталу неизвестен "
+             f"на {moment:%d.%m.%Y}")
 
 
 def with_plate(row: DeliveryRow, moment: datetime,
@@ -49,10 +65,14 @@ def with_plate(row: DeliveryRow, moment: datetime,
 
     answer = ask(row.board_number, moment.strftime("%Y-%m-%d"), row.kind, moment)
     overrides = dict(row.overrides)
+    disputed = dict(row.disagreements)
 
     if isinstance(answer, NotFound):
         overrides["госномер"] = f"портал: {answer.reason}"
-        return row.model_copy(update={"overrides": overrides}), frozenset()
+        return row.model_copy(update={
+            "overrides": overrides,
+            "notes": row.notes + (_unknown_plate_note(row.board_number, moment),),
+        }), frozenset()
 
     assert isinstance(answer, VehicleInfo)
     update: dict = {}
@@ -66,12 +86,16 @@ def with_plate(row: DeliveryRow, moment: datetime,
         )
     else:
         overrides["госномер"] = f"портал знает борт {row.board_number}, но номера не дал"
+        update["notes"] = row.notes + (_unknown_plate_note(row.board_number, moment),)
 
+    # Маршрут портала, сказанный иначе, — это спор, и он идёт в книгу: третье
+    # мнение не становится согласованным оттого, что оно третье.
     theirs = (answer.route or "").strip()
     ours = (row.route or "").strip()
     if theirs and ours and theirs != ours:
-        overrides["маршрут"] = f"портал говорит {theirs}, в строке {ours}"
+        disputed["маршрут"] = f"портал говорит {theirs}, в строке {ours}"
     elif theirs and not ours:
-        overrides["маршрут"] = f"портал говорит {theirs}, у нас маршрут не опознан"
+        disputed["маршрут"] = f"портал говорит {theirs}, у нас маршрут не опознан"
 
-    return row.model_copy(update={**update, "overrides": overrides}), frozenset(changed)
+    return row.model_copy(update={**update, "overrides": overrides,
+                                   "disagreements": disputed}), frozenset(changed)

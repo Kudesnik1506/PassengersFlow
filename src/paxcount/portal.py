@@ -107,10 +107,10 @@ def credentials(env_path: Path = Path(".env")) -> tuple[str, str]:
     Переменные окружения имеют приоритет: так запуск в CI или на чужой машине
     не требует класть файл с паролем на диск.
     """
-    import os
+    from .env import values as env_values
 
-    login = os.environ.get("PORTAL_LOGIN")
-    password = os.environ.get("PORTAL_PASSWORD")
+    found = env_values(env_path)
+    login, password = found.get("PORTAL_LOGIN"), found.get("PORTAL_PASSWORD")
     if login and password:
         return login, password
     if not env_path.exists():
@@ -118,15 +118,8 @@ def credentials(env_path: Path = Path(".env")) -> tuple[str, str]:
             f"нет учётки портала: ни PORTAL_LOGIN/PORTAL_PASSWORD в окружении, "
             f"ни файла {env_path}. Образец — .env.example"
         )
-    values: dict[str, str] = {}
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        if "=" in line and not line.strip().startswith("#"):
-            key, _, value = line.partition("=")
-            values[key.strip()] = value.strip()
-    try:
-        return values["PORTAL_LOGIN"], values["PORTAL_PASSWORD"]
-    except KeyError as exc:
-        raise RuntimeError(f"в {env_path} нет {exc.args[0]}") from exc
+    missing = "PORTAL_LOGIN" if not login else "PORTAL_PASSWORD"
+    raise RuntimeError(f"в {env_path} нет {missing}")
 
 
 def http_transport() -> Transport:

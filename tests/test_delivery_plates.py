@@ -102,9 +102,70 @@ def test_a_route_the_portal_disputes_is_recorded_not_replaced():
     """Портал говорит другой маршрут — это расхождение, а не замена.
 
     Маршрут в строке остаётся наш (или оператора): подменить его молча значит
-    выдать третье мнение за согласованное. Но и потерять разногласие нельзя —
-    оно уходит в `overrides`, где разбирается спор о строке.
+    выдать третье мнение за согласованное. Но и промолчать нельзя — спор уходит
+    в книгу графой S, к человеку, который вправе решить (решение 087).
     """
     out, _ = with_plate(row(route="50"), MOMENT, answers(found(route="64")))
     assert out.route == "50"
-    assert "64" in " ".join(out.overrides.values())
+    assert "64" in out.disagreement_cell
+
+
+def test_a_successful_substitution_is_not_a_disagreement():
+    """«Портал по борту 1596» — происхождение, а не спор.
+
+    Первая боевая сборка залила графу S на 292 строках из 295 именно такими
+    пометками. Графа, заполненная почти везде, не говорит ничего.
+    """
+    out, _ = with_plate(row(), MOMENT, answers(found()))
+    assert out.disagreement_cell is None
+    assert out.overrides, "происхождение при этом записано — оно нужно для спора"
+
+
+# ---- Ненайденный госномер объясняется в книге ---------------------------------
+#
+# Причина отказа портала копилась в `overrides` и до книги не доезжала: заказчик
+# видел в графе голый бортовой номер без объяснения. Вопрос «почему в строке 60
+# бортовой не заменён» возник именно поэтому — на 295 строках таких девять.
+#
+# Владелец (18.09): указывать в комментариях. Не в графе расхождений: это не
+# спор с оператором, а факт о нашем поиске.
+
+
+def test_a_board_the_portal_does_not_know_says_so_in_the_comment():
+    out, _ = with_plate(row(), MOMENT, answers(NotFound("1596", "нет в базе")))
+    assert any("госномер" in note for note in out.notes)
+    assert any("1596" in note for note in out.notes), "борт назван: по нему и искали"
+    assert out.comment_cell and "госномер" in out.comment_cell
+
+
+def test_the_explanation_does_not_pretend_to_be_a_table_code():
+    """Графа M проверяется по таблице 2; текст не вправе занять место кода."""
+    out, _ = with_plate(row(), MOMENT, answers(NotFound("1596", "нет в базе")))
+    assert out.comment is None
+
+
+def test_the_explanation_joins_the_notes_already_there():
+    """Разрыв записи и ненайденный номер уживаются в одной клетке."""
+    ours = row(notes=("разрыв записи камеры 2 07:26:42-07:44:36",))
+    out, _ = with_plate(ours, MOMENT, answers(NotFound("1596", "нет в базе")))
+    assert len(out.notes) == 2
+    assert "разрыв записи" in out.comment_cell and "госномер" in out.comment_cell
+
+
+def test_a_portal_that_knows_the_board_but_gives_no_plate_also_says_so():
+    out, _ = with_plate(row(), MOMENT, answers(found(state_number=None)))
+    assert any("госномер" in note for note in out.notes)
+
+
+def test_a_found_plate_adds_no_note():
+    """Молчание — признак успеха: объяснять нечего, графа остаётся пустой."""
+    out, _ = with_plate(row(), MOMENT, answers(found()))
+    assert out.notes == ()
+
+
+def test_a_trolley_is_not_explained_either():
+    """У троллейбуса госномера нет по устройству — это не отказ портала."""
+    def refuse(*a, **kw):
+        raise AssertionError("портал не должен спрашиваться")
+    trolley = row(kind=VehicleKind.TROLLEY, board_number="3144")
+    assert with_plate(trolley, MOMENT, refuse)[0].notes == ()
