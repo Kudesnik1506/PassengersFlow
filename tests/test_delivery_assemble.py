@@ -30,8 +30,8 @@ K2_FILE = "2026-09-10 - 06-56-06 - 22739_2 - 02"
 K3_FILE = "2026-08-10 - 06-50-46 - 22739_3 - 01"
 
 RECORDS = [
-    ClockRecord(camera="2", file=K2_FILE, offset_to_k2_s=0.0, measured_by="ноль шкалы"),
-    ClockRecord(camera="3", file=K3_FILE, offset_to_k2_s=-418.0,
+    ClockRecord(camera="2", file=K2_FILE, offset_to_reference_s=0.0, reference_camera="2", measured_by="ноль шкалы"),
+    ClockRecord(camera="3", file=K3_FILE, offset_to_reference_s=-418.0, reference_camera="2",
                  measured_by="пара событий", date_override="2026-09-10"),
 ]
 

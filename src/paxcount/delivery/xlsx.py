@@ -51,13 +51,22 @@ HEADERS = [
     "Фамилия, имя расшифровщика",
 ]
 
-# Наша графа, шестнадцатая. В шапке заказчика её нет и быть не может: инструкция
-# знает одно время — то, что в графах C и D. Но оно стоит на ОБЩЕЙ шкале
-# (решение 036), а перематывать запись проверяющий будет по часам конкретной
-# камеры, и они расходятся: К3 отстаёт от К2 на семь минут. Подпись нарочно не
-# похожа на подписи заказчика — графу нельзя принять за графу инструкции.
+# Наши графы — с шестнадцатой. В шапке заказчика их нет и быть не может.
+# Подписи нарочно не похожи на подписи заказчика: графу нельзя принять за графу
+# инструкции, и слово «наш» в каждой стоит именно за этим.
+#
+# P — часы камеры: время бланка стоит на ОБЩЕЙ шкале, а перематывать запись
+#     проверяющий будет по часам конкретной камеры, и они расходятся на минуты.
+# Q, R — наш счёт. Графы заказчика K и L сборка не трогает вовсе: он заполняет
+#     их рукой (решение 085), а `N/A` по пункту 16 инструкции означает событие
+#     («ТС уже стояло с открытыми дверьми»), а не отсутствие счёта.
+# S — расхождения: всё, что мы заметили, но не вправе исправить молча
+#     (решение 087).
 EXTRA_HEADERS = [
     "Камера, на которой видна посадка-высадка, и время на её часах (наше)",
+    "Вышло (наш счёт)",
+    "Зашло (наш счёт)",
+    "Расхождения и спорное (наше)",
 ]
 SHEET_HEADERS = HEADERS + EXTRA_HEADERS
 
@@ -137,12 +146,19 @@ def row_values(row: DeliveryRow) -> list[str]:
         _cell(row.route),
         row.occupancy.value if row.occupancy else "",
         row.size.value if row.size else "",
-        _cell(row.alighted) if row.alighted is not None else NA,
-        _cell(row.boarded) if row.boarded is not None else NA,
+        # K и L — графы заказчика, и сборка их не заполняет ничем: ни числом,
+        # ни `N/A`. Причина не в вежливости, а в переносе ручного ввода — он
+        # спасает только пустую клетку, и `N/A` затирал бы вписанную цифру
+        # каждой пересборкой (решение 085).
+        "",
+        "",
         _cell(row.comment_cell),
         row.video,
         row.operator,
         row.camera_cell,
+        _cell(row.alighted),
+        _cell(row.boarded),
+        _cell(row.disagreement_cell),
     ]
 
 
@@ -311,6 +327,13 @@ def _split_comment(value: str) -> dict:
         return {"comment": None, "notes": tuple(parts)}
 
 
+def _route_or_none(value: str) -> str | None:
+    from .reconcile import UNKNOWN_ROUTE
+
+    text = (value or "").strip()
+    return None if not text or text == UNKNOWN_ROUTE else text
+
+
 def _enum_or_none(enum_cls, value: str):
     text = (value or "").strip()
     if not text:
@@ -323,14 +346,35 @@ def _enum_or_none(enum_cls, value: str):
     raise ValueError(f"{enum_cls.__name__}: значение {text!r} вне словаря заказчика")
 
 
+def _has_our_count_columns(cells: list[dict]) -> bool:
+    """Знает ли книга наши графы счёта — по подписи в шапке, а не по наличию цифр.
+
+    По цифрам судить нельзя: наша книга, собранная до первого счёта, пуста в Q
+    и R точно так же, как чужая, и молчаливый откат к K и L выдал бы ручной
+    ввод заказчика за наше измерение.
+    """
+    if not cells:
+        return False
+    header = cells[0]
+    return (header.get("Q") or "").strip() == EXTRA_HEADERS[1]
+
+
 def read_rows(path: Path) -> list[DeliveryRow]:
     """Читает лист «Бланк» книги заказчика в строки модели.
 
     Номер из графы раскладывается обратно в бортовой или государственный по
     виду ТС. Для автобуса исходный бортовой при этом уже утрачен — заменa у
     заказчика необратима (решение 026), и восстановить его из файла нечем.
+
+    Счёт читается из наших граф Q и R, если книга их знает, и из граф заказчика
+    K и L, если нет. Это не догадка, а признак самой книги: наши графы бывают
+    только у нашей сборки, и там K и L — ручной ввод заказчика, принимать
+    который за своё измерение нельзя. Книга без наших граф — принятый образец
+    или чужая работа, и счёт в ней единственный, какой есть.
     """
     cells = sheet_cells(path, BLANK_SHEET)
+    ours = _has_our_count_columns(cells)
+    out_col, in_col = ("Q", "R") if ours else ("K", "L")
 
     rows: list[DeliveryRow] = []
     for cell in cells[1:]:  # первая строка — шапка
@@ -352,11 +396,15 @@ def read_rows(path: Path) -> list[DeliveryRow]:
                 kind=kind,
                 board_number=board,
                 state_number=state,
-                route=(cell.get("H") or "").strip() or None,
+                # «N/A» в графе маршрута — это незнание по пункту 17, а не
+                # маршрут с таким названием. Пересборка обязана прочитать его
+                # так же, как написала, иначе сверка с оператором сравнит
+                # подпись с числом.
+                route=_route_or_none(cell.get("H", "")),
                 occupancy=_enum_or_none(Occupancy, cell.get("I", "")),
                 size=_enum_or_none(VehicleSize, cell.get("J", "")),
-                alighted=_int_or_none(cell.get("K", "")),
-                boarded=_int_or_none(cell.get("L", "")),
+                alighted=_int_or_none(cell.get(out_col, "")),
+                boarded=_int_or_none(cell.get(in_col, "")),
                 **_split_comment(cell.get("M", "")),
                 video=(cell.get("N") or "").strip(),
                 operator=(cell.get("O") or "").strip(),

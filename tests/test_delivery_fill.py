@@ -85,12 +85,17 @@ def cells(path: Path) -> dict[str, tuple[str, str]]:
 
 
 def test_counts_are_written_as_numbers_not_text(tmp_path):
-    """Текст «3» в графе «Вышло» заказчик не просуммирует, и не заметит этого."""
+    """Текст «3» заказчик не просуммирует, и не заметит этого.
+
+    Графы счёта переехали: K и L — заказчика, он заполняет их рукой
+    (решение 085), наш счёт стоит в Q и R. Требование к типу ячейки осталось
+    прежним и переехало вместе со счётом: сводная складывает числа.
+    """
     book = fill_template(template(tmp_path / "шаблон.xlsx"), [row()],
                           tmp_path / "книга.xlsx")
     got = cells(book)
-    assert got["K"] == ("число", "3"), "вышло"
-    assert got["L"] == ("число", "2"), "зашло"
+    assert got["Q"] == ("число", "3"), "вышло, наш счёт"
+    assert got["R"] == ("число", "2"), "зашло, наш счёт"
     assert got["C"] == ("число", "7") and got["D"] == ("число", "5"), "часы и минуты"
     assert got["H"] == ("число", "26"), "маршрут"
 
@@ -104,13 +109,23 @@ def test_the_date_is_a_real_date_not_a_string(tmp_path):
     assert value == "46275", "2026-09-10 в отсчёте Excel от 1899-12-30"
 
 
-def test_not_counted_stays_na_and_does_not_become_zero(tmp_path):
-    """N/A — это отказ считать по правилу инструкции, а не ноль пассажиров."""
+def test_the_customers_count_columns_are_left_untouched(tmp_path):
+    """K и L сборка не заполняет ничем — ни числом, ни `N/A`.
+
+    Прежде на их месте стоял наш счёт, а `None` превращался в `N/A`. И то и
+    другое отменено: `N/A` по пункту 16 инструкции означает событие («ТС уже
+    стояло с открытыми дверьми»), а не отсутствие счёта, и — главное — `N/A`
+    не пустота, поэтому перенос ручного ввода его не спасал бы: вписанная
+    заказчиком цифра затиралась бы каждой пересборкой.
+    """
     book = fill_template(template(tmp_path / "шаблон.xlsx"),
                           [row(alighted=None, boarded=None)], tmp_path / "книга.xlsx")
     got = cells(book)
-    assert got["K"][1] == "N/A" and got["L"][1] == "N/A"
-    assert got["K"][0] != "число", "N/A не число"
+    assert got.get("K", ("", ""))[1] == ""
+    assert got.get("L", ("", ""))[1] == ""
+    assert cells(fill_template(template(tmp_path / "ш2.xlsx"), [row()],
+                                tmp_path / "к2.xlsx")).get("K", ("", ""))[1] == "", \
+        "даже когда счёт есть, он идёт в нашу графу, а не в графу заказчика"
 
 
 def test_everything_the_template_carries_survives(tmp_path):
@@ -123,7 +138,7 @@ def test_everything_the_template_carries_survives(tmp_path):
         assert "Служебный лист" in z.read("xl/workbook.xml").decode("utf-8")
         assert z.read("xl/worksheets/sheet1.xml") == \
             zipfile.ZipFile(src).read("xl/worksheets/sheet1.xml")
-    assert 'ref="A1:P2"' in xml, "размер листа пересчитан под число строк и граф"
+    assert 'ref="A1:S2"' in xml, "размер листа пересчитан под число строк и граф"
 
 
 # ---- Подсветка расхождений с оператором --------------------------------------
@@ -265,12 +280,12 @@ def test_the_camera_reading_is_written_as_text(tmp_path):
     assert cells(book)["P"] == ("inlineStr", "К3 06:58:06")
 
 
-def test_the_sheet_size_counts_our_column_too(tmp_path):
+def test_the_sheet_size_counts_our_columns_too(tmp_path):
     book = fill_template(template(tmp_path / "шаблон.xlsx"), [row()],
                           tmp_path / "книга.xlsx")
     with zipfile.ZipFile(book) as z:
         xml = z.read("xl/worksheets/sheet2.xml").decode("utf-8")
-    assert 'ref="A1:P2"' in xml
+    assert 'ref="A1:S2"' in xml
 
 
 # ---- Ручной ввод заказчика переживает пересборку -------------------------------
@@ -335,8 +350,12 @@ def test_the_carry_covers_every_column_not_just_occupancy():
     Заказчик пишет в книге не только наполненность — и знать заранее, какие
     графы он тронет, мы не можем. Поэтому перенос не перечисляет графы, а
     смотрит, пусто ли у нас.
+
+    Исключение одно и оно не про догадку: наши собственные графы (P, Q, R, S)
+    не переносятся. В книге заказчика их нет вовсе, пока мы их не завели, и
+    пустота в них — наше «сказать нечего», а не чужая работа.
     """
-    from paxcount.delivery.fill import COLUMNS, carried_over
+    from paxcount.delivery.fill import COLUMNS, EXTRA_COLUMNS, carried_over
 
     ours = row(hours=6, minutes=56, route="26", state_number="А000АА00",
                 alighted=None, boarded=None, video="", operator="")
@@ -346,7 +365,7 @@ def test_the_carry_covers_every_column_not_just_occupancy():
     previous = [{"C": "6", "D": "56", "G": "А000АА00", "H": "26",
                   **{c: "чужое" for c in empty}}]
     kept = carried_over(previous, [ours])
-    assert set(kept[2]) == empty, "перенесено всё, что у нас пусто"
+    assert set(kept[2]) == empty - set(EXTRA_COLUMNS), "перенесено всё, что у нас пусто"
     assert len(empty) >= 5, f"граф, которые мы не заполняем, должно быть много: {empty}"
 
 

@@ -53,7 +53,7 @@ def test_round_trip_preserves_every_field(tmp_path):
     assert [r.minutes for r in back] == [0, 5]
 
 
-def test_na_is_written_as_na_not_zero(tmp_path):
+def test_an_uncounted_row_comes_back_uncounted(tmp_path):
     path = tmp_path / "out.xlsx"
     write_rows(path, [sample(alighted=None, boarded=None)])
     back = read_rows(path)[0]
@@ -134,17 +134,39 @@ def test_reads_real_accepted_table():
 # ---- Наша графа за шапкой заказчика ------------------------------------------
 #
 # Шапка заказчика — пятнадцать граф, и трогать её нельзя: на той стороне книгу
-# разбирают по тексту заголовка. Графа с часами камеры добавляется ШЕСТНАДЦАТОЙ
-# и подписана по-своему, чтобы её нельзя было принять за графу инструкции.
+# разбирают по тексту заголовка. Наши графы добавляются С ШЕСТНАДЦАТОЙ и
+# подписаны по-своему, чтобы их нельзя было принять за графы инструкции.
 
 
-def test_our_extra_column_stands_after_the_customer_header():
+def test_our_extra_columns_stand_after_the_customer_header():
     from paxcount.delivery.xlsx import EXTRA_HEADERS, SHEET_HEADERS
 
     assert SHEET_HEADERS[:15] == HEADERS, "пятнадцать граф заказчика не двигаются"
-    assert len(SHEET_HEADERS) == 16
-    assert SHEET_HEADERS[15] == EXTRA_HEADERS[0]
+    assert SHEET_HEADERS[15:] == EXTRA_HEADERS
     assert "камер" in EXTRA_HEADERS[0].lower(), "графа обязана называть камеру"
+
+
+def test_every_column_of_ours_says_it_is_ours():
+    """Подпись обязана отличать нашу графу от графы инструкции.
+
+    Проверяющий читает книгу построчно, а не по шапке, — но когда всё же
+    посмотрит наверх, он должен сразу увидеть, чьё это.
+    """
+    from paxcount.delivery.xlsx import EXTRA_HEADERS
+
+    assert all("наш" in h.lower() for h in EXTRA_HEADERS)
+
+
+def test_our_count_survives_the_round_trip(tmp_path):
+    """Пересборка читает прошлую книгу: наш счёт обязан вернуться из НАШЕЙ графы.
+
+    Принять за своё измерение то, что вписал заказчик в K и L, значит выдать
+    его работу за нашу — и потерять собственную.
+    """
+    path = tmp_path / "out.xlsx"
+    write_rows(path, [sample(alighted=12, boarded=8)])
+    back = read_rows(path)[0]
+    assert (back.alighted, back.boarded) == (12, 8)
 
 
 def test_the_camera_reading_reaches_the_sheet(tmp_path):
