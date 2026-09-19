@@ -242,3 +242,28 @@ def test_a_confirmed_stop_needs_no_excuse():
     found = candidates([passage(0)], [stop_at(0)], blind=[(t(-30), t(30))],
                         shift=timedelta(0), window=timedelta(seconds=60))
     assert found[0].sighting is not None and found[0].note == ""
+
+
+def test_two_passages_in_the_same_second_are_one_machine():
+    """Один и тот же момент — это один кузов, увиденный дважды.
+
+    Боевой кадр: автобус у остановки наполовину закрыт грузовым фургоном,
+    трекер видит два объекта и даёт два проезда в одну секунду. Две строки на
+    одну машину — брак файла (решение 075).
+    """
+    found = candidates([passage(0, track=1), passage(3, track=2)],
+                        [stop_at(0), stop_at(3)],
+                        shift=timedelta(0), window=timedelta(seconds=60))
+    assert len(found) == 1
+
+
+def test_machines_a_half_minute_apart_are_two_rows():
+    """Полминуты — тесно, но так бывает: в карман встают друг за другом.
+
+    Порог, взятый шире, съел боевую машину: два автобуса с разницей в 25
+    секунд, маршруты 226 и 26, слились в одну строку.
+    """
+    found = candidates([passage(0, track=1), passage(25, track=2)],
+                        [stop_at(0), stop_at(25)],
+                        shift=timedelta(0), window=timedelta(seconds=60))
+    assert len(found) == 2

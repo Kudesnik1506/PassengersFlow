@@ -274,7 +274,28 @@ def candidates(orphans: Sequence[Passage],
     for passage in близкие:                  # остались без стоянки
         if any(start <= passage.peak <= end for start, end in blind):
             found.append(Candidate(passage=passage, sighting=None, note=NO_STOP_NOTE))
-    return sorted(found, key=lambda c: c.passage.peak)
+    return _one_per_machine(sorted(found, key=lambda c: c.passage.peak))
+
+
+# Два кандидата в один и тот же момент — это один кузов, увиденный дважды:
+# трекер разрывает его, когда машину заслоняет другая (боевой кадр: автобус
+# наполовину закрыт грузовым фургоном, два проезда в одну секунду).
+#
+# Порог именно такой узкий. Взятый шире (45 с), он съел настоящую машину:
+# два автобуса встали в карман с разницей в 25 секунд, и маршрут 26 пропал
+# вместе со строкой.
+SAME_MACHINE_S = 10.0
+
+
+def _one_per_machine(found: list[Candidate]) -> list[Candidate]:
+    """Оставляет по одному кандидату на машину. Две строки на одну — брак."""
+    kept: list[Candidate] = []
+    for candidate in found:
+        if kept and (candidate.passage.peak - kept[-1].passage.peak
+                      ).total_seconds() < SAME_MACHINE_S:
+            continue
+        kept.append(candidate)
+    return kept
 
 
 def blind_windows(stops: Sequence[datetime],

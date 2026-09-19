@@ -164,3 +164,33 @@ def test_the_customers_words_are_the_only_vocabulary():
 
     assert public_kind("Автобус") is VehicleKind.BUS
     assert public_kind("") is None
+
+
+def test_a_kind_with_a_qualifier_is_still_a_bus():
+    """«Автобус сочленённый» — автобус, а не чужое слово.
+
+    Модель отвечает словами, а не выбором из списка, и приписывает уточнения.
+    Отвергнув такой ответ, мы выбросили бы из книги настоящую машину.
+    """
+    from paxcount.counting.identify import public_kind
+    from paxcount.delivery.model import VehicleKind
+
+    assert public_kind("Автобус сочленённый") is VehicleKind.BUS
+    assert public_kind("троллейбус (электробус?)") is VehicleKind.TROLLEY
+    assert public_kind("Грузовой фургон-рефрижератор") is None
+
+
+def test_the_portal_settles_the_kind():
+    """Госномер, отличный от бортового, — это колёсное ТС с госномером.
+
+    Прогоны отнесли три машины к троллейбусам по четырёхзначному борту и
+    логотипу, а портал вернул по ним госномера и перевозчика-автобусника.
+    У троллейбуса и трамвая портал повторяет в графе госномера бортовой
+    (решение 025), поэтому различие номеров — прямое свидетельство.
+    """
+    from paxcount.counting.identify import kind_by_portal
+    from paxcount.delivery.model import VehicleKind
+
+    assert kind_by_portal(board="7834", state="К982ЕА198") is VehicleKind.BUS
+    assert kind_by_portal(board="3144", state="3144") is None
+    assert kind_by_portal(board="3144", state=None) is None

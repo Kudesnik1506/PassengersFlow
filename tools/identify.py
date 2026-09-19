@@ -322,7 +322,9 @@ def book_rows(book: Path, camera: str) -> list[tuple[datetime, str]]:
 
 
 def apply(args) -> int:
-    from paxcount.counting.identify import agreed_identity, public_kind
+    from paxcount.counting.identify import (
+        agreed_identity, kind_by_portal, public_kind,
+    )
     from paxcount.delivery.chain import already_known
     from paxcount.delivery.model import VehicleKind
 
@@ -375,8 +377,19 @@ def apply(args) -> int:
         # Последняя проверка: не записан ли этот заезд оператором. Выравнивание
         # ошибается, и четыре кандидата из двенадцати на боевом утре оказались
         # уже стоящими в книге — вторая строка на тот же заезд бракует файл.
+        # Вид: слово модели в словарь заказчика, а спор о нём разрешает портал.
+        вид = public_kind(agreed.kind)
+        по_порталу = kind_by_portal(board=row["борт"] or None,
+                                     state=row["госномер_портала"] or None)
+        if по_порталу is not None and по_порталу is not вид:
+            row["причина"] = "; ".join(x for x in (
+                row["причина"],
+                f"вид с кадра «{agreed.kind or 'не назван'}», "
+                f"портал дал госномер — {по_порталу.value}") if x)
+            вид = по_порталу
+        row["вид"] = вид.value if вид else ""
         # Грузовой фургон в книгу не идёт: она про общественный транспорт.
-        if agreed.kind and public_kind(agreed.kind) is None:
+        if agreed.kind and вид is None:
             row["уже_в_книге"] = "не ОТ"
         номер = row["госномер_портала"] or row["борт"]
         if номер and already_known(datetime.fromisoformat(task["на_шкале"]),
