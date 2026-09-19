@@ -1,0 +1,207 @@
+"""Цепочка проездов по камере 1 и её сопоставление с остальными свидетелями.
+
+Три камеры видят разное, и строку книги ни одна из них не даёт в одиночку.
+К2 и К3 показывают, что машина ОСТАНОВИЛАСЬ, но не знают, какая это машина:
+бортового номера детектор не читает (решение 003). К1 стоит в ста метрах вверх
+по ходу и читает борт с подъезжающей морды, но стоянку от проезда не отличает
+(решение 030). Оператор знает машину и время, но пропускает.
+
+Здесь эти последовательности выравниваются между собой. Выравнивание, а не
+поиск ближайшего по времени: машины идут раз в 80–120 секунд, часы камер
+разъезжаются на минуты, и «ближайший» на такой дистанции — уже соседняя
+машина. Заказчик назвал главным признаком порядок прибытия (решение 028), и
+порядок здесь — не следствие, а условие: индексы в паре не убывают никогда.
+"""
+
+from __future__ import annotations
+
+import statistics
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Mapping, Sequence
+
+if TYPE_CHECKING:  # трекинг тянет numpy и веса — цепочке они не нужны
+    from ..visits import VehicleTrack
+
+# Цена пропуска с любой стороны. Пара оценивается от 0 до 1, поэтому пропуск
+# дороже самой слабой пары: выравнивание предпочтёт спарить далёкое, но
+# возможное, и оставит пропуск там, где пары нет вовсе.
+GAP_COST = -1.0
+
+# Сколько пар нужно, чтобы говорить о сдвиге файла. Сдвиг подгоняется по тем же
+# звеньям, которые потом ищутся этим сдвигом, — на двух парах подгонка
+# объясняет сама себя и уводит ленту правдоподобно.
+MIN_PAIRS = 3
+
+
+@dataclass(frozen=True)
+class Passage:
+    """Проезд мимо камеры: прохождение, а не стоянка (решение 030).
+
+    `peak` — момент кадра, по которому машину опознают: тот, где рамка крупнее
+    всего (решение 028). Время — на часах своей камеры, как и в `Sighting`.
+    """
+
+    camera: str
+    file: str
+    track: int
+    start: datetime
+    end: datetime
+    peak: datetime
+    box: tuple[float, float, float, float]
+    frame_size: tuple[int, int]
+
+
+def align(left: Sequence[datetime],
+           right: Sequence[datetime],
+           *,
+           shift: timedelta,
+           tolerance: timedelta,
+           anchors: Mapping[int, int] | None = None,
+           ) -> list[tuple[int | None, int | None]]:
+    """Две последовательности моментов, спаренные по порядку и времени.
+
+    `shift` — ожидаемое смещение правой шкалы относительно левой, `tolerance` —
+    сколько сверх него прощается. За допуском пары нет вовсе: далёкий сосед не
+    становится парой оттого, что других нет.
+
+    `anchors` — пары, уже известные из прямого свидетельства (бортовой номер,
+    решение 068). Время их не переставляет: косвенный признак не спорит с
+    прямым.
+
+    `None` с любой стороны — пропуск, и это законный исход: обе стороны
+    пропускают машины, ради чего всё и затевается.
+    """
+    anchors = dict(anchors or {})
+    held_right = set(anchors.values())
+    n, m = len(left), len(right)
+    seconds = tolerance.total_seconds()
+
+    def score(i: int, j: int) -> float | None:
+        if i in anchors:
+            return 1.0 if anchors[i] == j else None
+        if j in held_right:
+            return None
+        off = abs((left[i] - right[j] - shift).total_seconds())
+        return 1.0 - off / seconds if off <= seconds else None
+
+    best: list[list[float]] = [[0.0] * (m + 1) for _ in range(n + 1)]
+    step: list[list[str]] = [[""] * (m + 1) for _ in range(n + 1)]
+    for i in range(1, n + 1):
+        best[i][0] = best[i - 1][0] + GAP_COST
+        step[i][0] = "left"
+    for j in range(1, m + 1):
+        best[0][j] = best[0][j - 1] + GAP_COST
+        step[0][j] = "right"
+
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            ways: list[tuple[float, str]] = []
+            pair = score(i - 1, j - 1)
+            if pair is not None:
+                ways.append((best[i - 1][j - 1] + pair, "pair"))
+            if i - 1 not in anchors:
+                ways.append((best[i - 1][j] + GAP_COST, "left"))
+            if j - 1 not in held_right:
+                ways.append((best[i][j - 1] + GAP_COST, "right"))
+            if not ways:                      # якорь не даёт пройти иначе
+                ways.append((best[i - 1][j - 1] + GAP_COST * 2, "pair"))
+            best[i][j], step[i][j] = max(ways)
+
+    rows: list[tuple[int | None, int | None]] = []
+    i, j = n, m
+    while i or j:
+        move = step[i][j]
+        if move == "pair":
+            i, j = i - 1, j - 1
+            rows.append((i, j))
+        elif move == "left":
+            i -= 1
+            rows.append((i, None))
+        else:
+            j -= 1
+            rows.append((None, j))
+    rows.reverse()
+    return rows
+
+
+def fitted_shift(left: Sequence[datetime],
+                  right: Sequence[datetime],
+                  rows: Sequence[tuple[int | None, int | None]],
+                  minimum: int | None = None) -> timedelta:
+    """Смещение шкал по спаренным звеньям — медианой, а не средним.
+
+    Тем же приёмом меряется расхождение часов оператора (`sequence.clock_shift`):
+    одно испорченное звено не вправе утащить ленту за собой.
+
+    `minimum` — сколько пар считать замером. Меньше — отказ: по двум парам
+    сдвиг не измеряется, а придумывается.
+    """
+    offsets = [left[i] - right[j] for i, j in rows if i is not None and j is not None]
+    if minimum is not None and len(offsets) < minimum:
+        raise ValueError(
+            f"пар для замера сдвига {len(offsets)}, нужно {minimum}: "
+            "по такому числу сдвиг не измеряется, а придумывается"
+        )
+    if not offsets:
+        raise ValueError("пар нет вовсе — сдвиг мерить не по чему")
+    return timedelta(seconds=statistics.median(o.total_seconds() for o in offsets))
+
+
+# Пороги проезда. Числа взяты замером по первому файлу К1 (25 минут): при
+# ширине рамки от 600 px и длительности от 5 с набирается 17 звеньев, и они
+# сходятся с 12 нажатиями оператора без единой лишней пары. Ниже порога идёт
+# поток через перекрёсток — там номер не прочитать, а в цепочке он даст
+# звенья, которых у остановки не было.
+MIN_WIDTH_PX = 600.0
+MIN_PASSAGE_S = 5.0
+
+# Насколько рамка должна отступить от края, чтобы кадр считался целым. Тот же
+# допуск, что у обреза кузова в `reconcile`: край кадра дрожит на пиксель.
+EDGE_PX = 2.0
+
+
+def passages(tracks: Mapping[int, "VehicleTrack"],
+              *,
+              camera: str,
+              file: str,
+              start: datetime,
+              frame_size: tuple[int, int],
+              min_width: float = MIN_WIDTH_PX,
+              min_seconds: float = MIN_PASSAGE_S,
+              ) -> list[Passage]:
+    """Проезды по трекам одного файла, в порядке прохождения.
+
+    `start` — начало записи по имени файла: время трека идёт от него.
+
+    Кадр опознания ищется среди тех, где рамка НЕ задевает край: на пике
+    проезда морда с номером уже наполовину за кадром, и рамка там шире всего
+    именно поэтому. Целых кадров нет вовсе — берём крупнейший из обрезанных и
+    отдаём как есть: пусть решает тот, кто будет читать.
+    """
+    width, height = frame_size
+    found: list[Passage] = []
+    for track_id, track in sorted(tracks.items()):
+        if not track.boxes:
+            continue
+        if track.times[-1] - track.times[0] < min_seconds:
+            continue
+        if max(float(b[2] - b[0]) for b in track.boxes) < min_width:
+            continue
+        whole = [n for n, b in enumerate(track.boxes)
+                  if b[0] > EDGE_PX and b[1] > EDGE_PX
+                  and b[2] < width - EDGE_PX and b[3] < height - EDGE_PX]
+        among = whole or range(len(track.boxes))
+        peak = max(among, key=lambda n: float(
+            (track.boxes[n][2] - track.boxes[n][0])
+            * (track.boxes[n][3] - track.boxes[n][1])))
+        box = track.boxes[peak]
+        found.append(Passage(
+            camera=camera, file=file, track=track_id,
+            start=start + timedelta(seconds=track.times[0]),
+            end=start + timedelta(seconds=track.times[-1]),
+            peak=start + timedelta(seconds=track.times[peak]),
+            box=(float(box[0]), float(box[1]), float(box[2]), float(box[3])),
+            frame_size=frame_size,
+        ))
+    return sorted(found, key=lambda p: p.start)
