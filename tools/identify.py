@@ -54,6 +54,10 @@ K1_TO_K2_S = -351.0
 WINDOW_S = 60.0
 # Запас вокруг рамки в кропе: номер бывает у самого края кузова.
 MARGIN_PX = 80
+# Насколько близко должна стоять строка книги с тем же номером, чтобы считать
+# заезд уже записанным. Машины идут раз в 80-120 с, а тот же борт возвращается
+# на круг через часы — трёх минут хватает, чтобы различить одно от другого.
+DUPLICATE_WINDOW_S = 180.0
 
 
 def book_stops(book: Path, camera: str) -> list[datetime]:
@@ -228,11 +232,28 @@ def read_answers() -> dict[str, list]:
     return runs
 
 
+def book_rows(book: Path, camera: str) -> list[tuple[datetime, str]]:
+    """Строки книги как пары «час камеры, номер ТС» — для проверки на дубль."""
+    day = None
+    found: list[tuple[datetime, str]] = []
+    for cell in sheet_cells(book, BLANK_SHEET)[1:]:
+        if day is None and (cell.get("B") or "").strip():
+            day = _day_of(cell["B"])
+        parts = (cell.get("P") or "").split()
+        number = (cell.get("G") or "").strip()
+        if len(parts) == 2 and parts[0] == f"К{camera}" and day and number:
+            found.append((datetime.combine(
+                day, datetime.strptime(parts[1], "%H:%M:%S").time()), number))
+    return found
+
+
 def apply(args) -> int:
     from paxcount.counting.identify import agreed_identity
+    from paxcount.delivery.chain import already_known
     from paxcount.delivery.model import VehicleKind
 
     tasks = json.loads((IDENTIFY_DIR / "задание.json").read_text(encoding="utf-8"))
+    written = book_rows(args.book, args.camera)
     runs = read_answers()
     if not runs:
         console.print("[red]ответов нет — сначала прогоны по кадрам[/red]")
@@ -257,6 +278,7 @@ def apply(args) -> int:
             "госномер_с_кадра": agreed.state_number or "",
             "маршрут_с_кадра": agreed.route or "",
             "маршрут_портала": "", "госномер_портала": "", "перевозчик": "",
+            "уже_в_книге": "",
             "причина": "; ".join(f"{k}: {v}" for k, v in sorted(why.items())),
         }
         if portal is not None and agreed.board_number:
@@ -270,6 +292,14 @@ def apply(args) -> int:
             else:
                 row["причина"] = "; ".join(x for x in (row["причина"],
                                                         "портал машину не знает") if x)
+        # Последняя проверка: не записан ли этот заезд оператором. Выравнивание
+        # ошибается, и четыре кандидата из двенадцати на боевом утре оказались
+        # уже стоящими в книге — вторая строка на тот же заезд бракует файл.
+        номер = row["госномер_портала"] or row["борт"]
+        if номер and already_known(datetime.fromisoformat(task["стоянка_К2"]),
+                                    номер, written,
+                                    window=timedelta(seconds=DUPLICATE_WINDOW_S)):
+            row["уже_в_книге"] = "да"
         rows.append(row)
 
     if portal is not None:
@@ -286,8 +316,12 @@ def apply(args) -> int:
 
     known = sum(1 for r in rows if r["борт"])
     routed = sum(1 for r in rows if r["маршрут_портала"] or r["маршрут_с_кадра"])
+    dupes = sum(1 for r in rows if r["уже_в_книге"])
     console.print(f"кандидатов {len(rows)}, борт согласован у {known}, "
                    f"маршрут известен у {routed}")
+    console.print(f"[yellow]уже стоят в книге: {dupes} — оператор их записал, "
+                   "выравнивание не спарило[/yellow]")
+    console.print(f"новых строк выйдет: {len(rows) - dupes}")
     console.print(f"[dim]{path}[/dim]")
     return 0
 
@@ -305,6 +339,9 @@ def main() -> int:
     use.add_argument("--date", default="2026-09-10", help="дата смены для портала")
     use.add_argument("--portal", action="store_true",
                       help="спросить маршрут и госномер по борту (сеть)")
+    use.add_argument("--camera", default="2", help="счётная камера кандидатов")
+    use.add_argument("--book", type=Path,
+                      default=OUT_DIR / "2026-09-10-697-22739.xlsx")
     args = parser.parse_args()
     return export(args) if args.команда == "export" else apply(args)
 

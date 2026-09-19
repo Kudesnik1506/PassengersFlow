@@ -112,7 +112,9 @@ def test_an_anchor_is_never_broken():
 # зафиксирована двумя секундами вместо посадки. Поэтому кандидат — только
 # пересечение: проезд рядом с камерой И стоянка, у которой нет своей строки.
 
-from paxcount.delivery.chain import MIN_CANDIDATE_PX, Passage, candidates  # noqa: E402
+from paxcount.delivery.chain import (  # noqa: E402
+    MIN_CANDIDATE_PX, Passage, already_known, candidates,
+)
 from paxcount.delivery.visibility import Sighting  # noqa: E402
 
 
@@ -165,3 +167,41 @@ def test_the_nearest_passage_wins_the_stop():
     found = candidates([passage(0, track=1), passage(40, track=2)], [stop_at(45)],
                         shift=timedelta(0), window=timedelta(seconds=60))
     assert found[0].passage.track == 2
+
+
+# --- Последняя проверка: не записан ли этот заезд уже ------------------------
+
+
+def test_the_same_vehicle_at_the_same_minute_is_already_in_the_book():
+    """Опознали машину — и нашли её же в книге рядом по времени.
+
+    Выравнивание идёт по времени и ошибается: лишнее звено сдвигает разбор, и
+    проезд остаётся «ничьим», хотя оператор машину записал. На боевом утре так
+    вышло у четырёх кандидатов из двенадцати. Вторая строка на тот же заезд —
+    ровно то, за что заказчик бракует файл (решение 075).
+    """
+    книга = [(t(0), "Р362НА198"), (t(300), "Х000ХХ178")]
+    assert already_known(t(38), "Р362НА198", книга, window=timedelta(seconds=180))
+
+
+def test_the_same_vehicle_on_its_next_round_is_a_new_row():
+    """Машина ходит по кругу и возвращается — это другой заезд, а не дубль.
+
+    В книге один госномер встречается до пяти раз за сутки. Отвергать строку
+    по совпадению номера без времени значило бы терять все рейсы, кроме первого.
+    """
+    книга = [(t(0), "Р362НА198")]
+    assert not already_known(t(3600), "Р362НА198", книга,
+                              window=timedelta(seconds=180))
+
+
+def test_another_vehicle_at_the_same_minute_does_not_block_the_row():
+    """Соседняя машина в ту же минуту — обычное дело: они идут через 80 секунд."""
+    книга = [(t(0), "Х000ХХ178")]
+    assert not already_known(t(20), "Р362НА198", книга,
+                              window=timedelta(seconds=180))
+
+
+def test_without_a_number_nothing_can_be_told_apart():
+    """Безымянную строку по номеру не проверить — и выдавать её за проверенную нельзя."""
+    assert already_known(t(0), "", [(t(0), "")], window=timedelta(seconds=180)) is False
