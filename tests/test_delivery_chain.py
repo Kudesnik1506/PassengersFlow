@@ -102,3 +102,66 @@ def test_an_anchor_is_never_broken():
                   anchors={1: 0})
     assert paired(held) == [(1, 0)]
     assert (0, None) in held
+
+
+# --- Кандидаты: кого мы считаем пропущенной машиной -------------------------
+#
+# Ни один свидетель не надёжен в одиночку, и это замерено. К1 видит встречный
+# поток: троллейбус на дальней полосе даёт такой же «ничей проезд», как машина
+# у кармана. К2 фрагментирует стоянку: у контрольной машины (борт 38208) она
+# зафиксирована двумя секундами вместо посадки. Поэтому кандидат — только
+# пересечение: проезд рядом с камерой И стоянка, у которой нет своей строки.
+
+from paxcount.delivery.chain import MIN_CANDIDATE_PX, Passage, candidates  # noqa: E402
+from paxcount.delivery.visibility import Sighting  # noqa: E402
+
+
+def passage(at: float, width: float = MIN_CANDIDATE_PX, track: int = 1) -> Passage:
+    return Passage(camera="1", file="ф", track=track, start=t(at), end=t(at + 20),
+                    peak=t(at + 5), box=(100.0, 200.0, 100.0 + width, 800.0),
+                    frame_size=(1920, 1080))
+
+
+def stop_at(at: float, seconds: float = 15.0) -> Sighting:
+    return Sighting(start=t(at), end=t(at + seconds), box=(10.0, 10.0, 900.0, 700.0),
+                     frame_size=(1920, 1080))
+
+
+def test_a_passage_without_a_stop_is_not_a_candidate():
+    """Проехал мимо — не наша машина.
+
+    К1 стоит в ста метрах вверх по ходу и снимает весь поток, включая тех, кто
+    остановку минует. Строка по такому проезду утверждала бы стоянку, которой
+    не было, а ложная строка хуже отсутствующей.
+    """
+    assert candidates([passage(0)], [], shift=timedelta(0),
+                       window=timedelta(seconds=60)) == []
+
+
+def test_a_distant_passage_is_not_a_candidate():
+    """Встречная полоса даёт такой же ничей проезд, как машина у кармана.
+
+    Различает только размер в кадре: у подтверждённых оператором проездов
+    ширина рамки от 900 px, у встречного троллейбуса — около 600.
+    """
+    far = passage(0, width=MIN_CANDIDATE_PX - 100)
+    assert candidates([far], [stop_at(0)], shift=timedelta(0),
+                       window=timedelta(seconds=60)) == []
+
+
+def test_two_passages_of_one_stop_make_one_candidate():
+    """Трек, разорванный надвое, — одна машина, а не две.
+
+    Иначе в книгу уйдут две строки на одну стоянку — ровно то, за что заказчик
+    бракует файл (решение 075).
+    """
+    found = candidates([passage(0, track=1), passage(12, track=2)], [stop_at(5)],
+                        shift=timedelta(0), window=timedelta(seconds=60))
+    assert len(found) == 1
+
+
+def test_the_nearest_passage_wins_the_stop():
+    """Стоянке достаётся тот проезд, что ближе по времени."""
+    found = candidates([passage(0, track=1), passage(40, track=2)], [stop_at(45)],
+                        shift=timedelta(0), window=timedelta(seconds=60))
+    assert found[0].passage.track == 2

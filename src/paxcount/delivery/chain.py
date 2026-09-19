@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Mapping, Sequence
 
 if TYPE_CHECKING:  # трекинг тянет numpy и веса — цепочке они не нужны
     from ..visits import VehicleTrack
+    from .visibility import Sighting
 
 # Цена пропуска с любой стороны. Пара оценивается от 0 до 1, поэтому пропуск
 # дороже самой слабой пары: выравнивание предпочтёт спарить далёкое, но
@@ -205,3 +206,54 @@ def passages(tracks: Mapping[int, "VehicleTrack"],
             frame_size=frame_size,
         ))
     return sorted(found, key=lambda p: p.start)
+
+
+# Ширина рамки, ниже которой проезд идёт по дальней полосе. Замер по утренней
+# смене: у 100 проездов, подтверждённых нажатием оператора, ширина от 900 px
+# (медиана 1158), а встречный троллейбус на дальней полосе даёт около 600.
+# Порог отсекает 23 ничьих проезда из 47, теряя 4 подтверждённых из 100.
+MIN_CANDIDATE_PX = 900.0
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """Машина, которой нет ни у оператора, ни у нас, — с двумя свидетельствами.
+
+    `passage` говорит, КТО это (с кадра читается борт), `sighting` — что она
+    ОСТАНОВИЛАСЬ. По отдельности ни того ни другого мало: К1 снимает и тех, кто
+    остановку минует, а стоянка сама по себе безымянна (решение 003).
+    """
+
+    passage: Passage
+    sighting: "Sighting"
+
+
+def candidates(orphans: Sequence[Passage],
+                free: Sequence["Sighting"],
+                *,
+                shift: timedelta,
+                window: timedelta,
+                min_width: float = MIN_CANDIDATE_PX,
+                ) -> list[Candidate]:
+    """Пропущенные машины: ничей проезд рядом с ничьей стоянкой.
+
+    `shift` — «часы проезда минус часы стоянки», `window` — насколько они
+    расходятся сверх него.
+
+    Стоянке достаётся ОДИН проезд, ближайший по времени: разорванный трек даёт
+    два проезда на одну машину, и обе строки ушли бы в книгу как два заезда.
+    """
+    близкие = [p for p in orphans
+                if p.box[2] - p.box[0] >= min_width]
+    found: list[Candidate] = []
+    for stop in sorted(free, key=lambda s: s.start):
+        подходят = [p for p in близкие
+                     if abs((p.peak - stop.start - shift).total_seconds())
+                     <= window.total_seconds()]
+        if not подходят:
+            continue
+        ближайший = min(подходят,
+                         key=lambda p: abs((p.peak - stop.start - shift).total_seconds()))
+        близкие = [p for p in близкие if p is not ближайший]
+        found.append(Candidate(passage=ближайший, sighting=stop))
+    return found
