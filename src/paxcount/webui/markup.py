@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import io
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -50,6 +51,29 @@ from ..truth import (
 router = APIRouter()
 PAGE_PATH = Path(__file__).parent / "markup.html"
 _PAGE_CACHE: dict[float, str] = {}
+
+# Насколько далеко вперёд кадры дешевле дочитать, чем перемотать. Замер на
+# боевом файле: открыть и перемотать — 65 мс, перемотать в открытом — 29 мс,
+# прочитать следующий подряд — около 1 мс. Значит перемотка окупается примерно
+# с тридцатого кадра, и запас берётся втрое шире: шаг проигрывания на x30 —
+# 60 кадров, и ради него перематывать незачем.
+SEQUENTIAL_REACH = 90
+# Открытый файл и номер кадра, который отдаст следующее чтение.
+_CURSOR: dict[str, tuple] = {}
+_CURSOR_LOCK = threading.Lock()
+
+
+def reads_forward(position: int | None, frame: int,
+                   reach: int = SEQUENTIAL_REACH) -> bool:
+    """Дочитать до кадра последовательно (`True`) или перемотать (`False`).
+
+    `position` — номер кадра, который отдаст следующий `read()` открытого файла;
+    `None` — файла нет. Назад последовательным чтением не ходят: файл читается
+    только вперёд, и кадр позади курсора достаётся лишь перемоткой.
+    """
+    if position is None:
+        return False
+    return 0 <= frame - position <= reach
 
 
 def _page() -> str:
@@ -222,17 +246,56 @@ def api_at(stem: str, frame: int) -> JSONResponse:
     })
 
 
+def _grab(path: Path, frame: int):
+    """Кадр из файла, по возможности дочитыванием, а не перемоткой.
+
+    Держится один открытый файл — тот, который смотрят. Проигрывание идёт
+    подряд, и на нём это разница между 1 мс и 29 мс на кадр, то есть между
+    x30 и x1. Второй файл открывать незачем: экран показывает один.
+
+    Замок — потому что запрос на кадр приходит на каждый показанный кадр, а
+    `VideoCapture` одному курсору по файлу и принадлежит: два читателя разом
+    сдвинут его друг у друга и получат чужие кадры.
+    """
+    import cv2
+
+    with _CURSOR_LOCK:
+        cap, position = _CURSOR.get(str(path), (None, None))
+        if cap is None:
+            cap = cv2.VideoCapture(str(path))
+            position = None
+        if not reads_forward(position, frame):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame)
+            position = frame
+        while position < frame:      # дочитываем пропускаемое проигрыванием
+            cap.grab()               # без декодирования: кадр не нужен
+            position += 1
+        ok, image = cap.read()
+        position += 1
+        # Кэш на один файл: открытый второй держал бы лишний курсор впустую.
+        for other, (old, _) in list(_CURSOR.items()):
+            if other != str(path):
+                old.release()
+                del _CURSOR[other]
+        _CURSOR[str(path)] = (cap, position)
+    return ok, image
+
+
 @router.get("/api/markup/frame")
-def api_frame(stem: str, frame: int = 0, quality: int = 92) -> Response:
+def api_frame(stem: str, frame: int = 0, quality: int = 92,
+               width: int = 0) -> Response:
+    """Кадр записи. `width` — ужать до такой ширины: столько же пикселей на
+    проигрывании стоят вчетверо дешевле, а искать по ним машину так же удобно.
+    """
     import cv2
 
     path = _find(stem)
-    cap = cv2.VideoCapture(str(path))
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame)
-    ok, image = cap.read()
-    cap.release()
+    ok, image = _grab(path, frame)
     if not ok:
         raise HTTPException(404, f"кадр {frame} не читается")
+    if width and width < image.shape[1]:
+        height = round(image.shape[0] * width / image.shape[1])
+        image = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
     ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, quality])
     return Response(io.BytesIO(buf.tobytes()).getvalue(), media_type="image/jpeg")
 
