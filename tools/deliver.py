@@ -606,7 +606,10 @@ def main() -> int:
     if previous.exists():
         was = sheet_cells(previous, BLANK_SHEET)[1:]
         if previous != baseline and baseline.exists():
-            diff = manual.found(was, sheet_cells(baseline, BLANK_SHEET)[1:])
+            # `theirs`, а не `found`: клетка, которой наш расчёт не заполняет
+            # вовсе, принадлежит заказчику и тогда, когда разница с эталоном о
+            # ней молчит, — его значение успело попасть в эталон переносом.
+            diff = manual.theirs(was, sheet_cells(baseline, BLANK_SHEET)[1:], rows)
             edits = manual.merged(edits, diff.edits)
             for column, count in sorted(diff.spoiled.items()):
                 console.print(f"[dim]графа {column}: в {count} клетках значение "
