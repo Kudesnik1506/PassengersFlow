@@ -26,7 +26,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
-from ..doorprop.layout import NOSE_LEFT, NOSE_RIGHT
 from ..truth import DoorLayout
 from .model import DOORS_BY_SIZE, DeliveryRow, VehicleKind, VehicleSize
 
@@ -52,18 +51,20 @@ class VisitFacts:
     stood_where: str | None = None
 
 
-def comment_code(layout: DoorLayout) -> tuple[int | None, str | None]:
-    """Код таблицы 2 по набору невидимых дверей. Пара «код, пояснение».
+def code_for_hidden(hidden: list[int], total: int) -> tuple[int | None, str | None]:
+    """Код таблицы 2 по номерам невидимых дверей. Пара «код, пояснение».
 
-    Возвращает только 5-8 («посчитать нельзя») — см. докстринг модуля.
-    `None` с пояснением означает, что случай в таблицу 2 не укладывается и
-    решать его должен человек, а не подбор ближайшего похожего кода.
+    Отделено от `comment_code`, потому что номера невидимых дверей приходят с
+    двух сторон: из ручной разметки (человек отметил дверь закрытой) и из счёта
+    дверей в кадре (`delivery.edgedoors`). Таблица одна, и толковать её дважды
+    значит однажды истолковать по-разному.
+
+    Двери нумеруются от носа. `None` с пояснением — случай в таблицу 2 не
+    укладывается, и решать его должен человек: зеркальный код уйдёт заказчику
+    правдоподобным и неверным.
     """
-    hidden = sorted(d.n_from_nose for d in layout.doors if not d.in_frame)
     if not hidden:
         return None, None
-
-    total = DOORS_BY_SIZE.get(layout.size) or len(layout.doors)
     if len(hidden) == total:
         return None, (
             "ни одной двери не видно: таблица 2 такого случая не описывает — "
@@ -94,45 +95,24 @@ def comment_code(layout: DoorLayout) -> tuple[int | None, str | None]:
     )
 
 
+def comment_code(layout: DoorLayout) -> tuple[int | None, str | None]:
+    """Код таблицы 2 по набору невидимых дверей разметки. Пара «код, пояснение».
+
+    Возвращает только 5-8 («посчитать нельзя») — см. докстринг модуля.
+    """
+    hidden = sorted(d.n_from_nose for d in layout.doors if not d.in_frame)
+    total = DOORS_BY_SIZE.get(layout.size) or len(layout.doors)
+    return code_for_hidden(hidden, total)
+
+
 # Допуск, в пределах которого рамка считается упёршейся в край кадра. Детектор
 # кладёт бок машины ровно на границу, но округление и сглаживание трека дают
 # пиксель-другой отступа, и жёсткое равенство пропускало бы настоящий обрез.
+#
+# Сам вывод кода из обреза кузова отсюда убран (решение 082): обрез кузова не
+# означает пропавшей двери, и на 155 стоянках из 239 не означал. Осталась
+# величина — ею пользуется `edgedoors.cut_end`, чтобы назвать срезанный конец.
 EDGE_TOLERANCE_PX = 2.0
-
-
-def clipped_code(body_px: tuple[float, float, float, float],
-                  frame_size: tuple[int, int],
-                  orientation: str | None) -> tuple[int | None, str | None]:
-    """Код таблицы 2 по тому, упёрся ли кузов в край кадра. Без ручной разметки.
-
-    `comment_code` спрашивает разметку — какие двери человек отметил невидимыми,
-    — и потому молчит на трёхстах строках, где разметки нет. Но самый частый
-    случай виден и без неё: машина не влезла в кадр. Какой конец срезан, нос или
-    корма, следует из направления движения, а оно задано на камеру (`cameras`).
-
-    Возвращаются только 5 и 7 — «не попала первая дверь» и «не попала
-    последняя». Сказать «половина» (коды 6 и 8) отсюда нельзя: для этого надо
-    знать, СКОЛЬКО кузова осталось за кадром, а видно только то, что внутри.
-
-    `None` с пояснением — случай не наш, и подбирать ближайший похожий код
-    нельзя: зеркальный код уйдёт заказчику правдоподобным и неверным.
-    """
-    if orientation not in (NOSE_LEFT, NOSE_RIGHT):
-        return None, ("направление движения для камеры не задано — какой конец "
-                       "срезан, неизвестно, а зеркальный код хуже пустой графы")
-
-    left, _, right, _ = body_px
-    width = frame_size[0]
-    cut_left = left <= EDGE_TOLERANCE_PX
-    cut_right = right >= width - EDGE_TOLERANCE_PX
-    if not cut_left and not cut_right:
-        return None, None
-    if cut_left and cut_right:
-        return None, ("кузов срезан с обеих сторон: таблица 2 описывает начало "
-                       "и конец по отдельности, такого случая в ней нет")
-
-    nose_cut = cut_right if orientation == NOSE_RIGHT else cut_left
-    return (5 if nose_cut else 7), None
 
 
 def gap_note(camera: str, start: datetime, end: datetime) -> str:
@@ -216,6 +196,36 @@ def build_row(
         camera=facts.camera,
         camera_ts=camera_ts,
     )
+
+
+# Подпись неопознанного маршрута по пункту 17 инструкции. Та же, что у отказа
+# от счёта, и это не совпадение: в обоих случаях заказчик просит написать
+# «нечего сказать» словами, а не оставить графу пустой.
+UNKNOWN_ROUTE = "N/A"
+
+
+def with_unnamed_route(row: DeliveryRow) -> DeliveryRow:
+    """Пункт 17: маршрут не виден — «N/A», а номер ТС уходит в комментарий.
+
+    Дословно: «Если не виден номер маршрута, то тоже ставим N/A, а в пустой
+    графе справа в таблице, на этой же строчке пишем бортовой номер или
+    госномер транспорта».
+
+    Какая графа «пустая справа», видно по принятому заказчиком образцу: правее
+    графы расшифровщика в нём не заполнено ничего, а графа комментария занята
+    на шести строках из 312. Значит она.
+
+    Номер идёт тот же, что в графе номера (`row.number`): госномер у автобуса,
+    бортовой у рельсового. Назвать нечего — и писать нечего: выдуманный номер
+    хуже пустой графы.
+    """
+    if (row.route or "").strip():
+        return row
+    number = row.number
+    update: dict = {"route": UNKNOWN_ROUTE}
+    if number:
+        update["notes"] = row.notes + (f"маршрут не опознан, ТС {number}",)
+    return row.model_copy(update=update)
 
 
 def size_from_doors(doors_total: int | None) -> VehicleSize | None:
