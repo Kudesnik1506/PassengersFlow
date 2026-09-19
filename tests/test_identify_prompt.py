@@ -80,3 +80,52 @@ def test_region_must_not_be_guessed():
 
 def test_no_personal_details_in_the_answer():
     assert "лиц" in prompt().lower()
+
+
+# --- Камера 1: размер с неё не читается ------------------------------------
+
+
+def test_size_is_not_asked_of_camera_one():
+    """Размер определяется числом дверей, а дверей с К1 не видно.
+
+    Двери у российских машин справа; К1 стоит навстречу потоку и снимает морду
+    и левый борт (решение 030). Ответ о дверях с этой камеры был бы выдумкой, а
+    выдумка в графе J неотличима от чтения.
+    """
+    text = build_identify_prompt(ask_size=False)
+    assert "двер" not in text.lower()
+    assert "size" not in text
+    assert "board_number" in text, "борт с К1 читается — ради него всё и затевается"
+
+
+def test_fields_without_a_strict_majority_stay_empty():
+    """Каждое поле судится отдельно: борт прочли все, маршрут — нет."""
+    from paxcount.counting.identify import Identity, agreed_identity
+
+    answers = [
+        Identity(kind="Автобус", board_number="38208", route="226"),
+        Identity(kind="Автобус", board_number="38208", route="26"),
+        Identity(kind="Автобус", board_number="38208", route=None),
+    ]
+    agreed, why = agreed_identity(answers)
+    assert (agreed.board_number, agreed.kind) == ("38208", "Автобус")
+    assert agreed.route is None and "маршрут" in why["route"]
+
+
+def test_a_single_run_is_not_an_agreement():
+    """Один прогон — мнение, а не согласие (решение 024)."""
+    from paxcount.counting.identify import Identity, agreed_identity
+
+    agreed, why = agreed_identity([Identity(board_number="38208")])
+    assert agreed.board_number is None
+    assert "один прогон" in why.get("всё", "")
+
+
+def test_an_answer_is_read_out_of_the_noise_around_it():
+    """Модель любит обрамить JSON словами — это не повод терять ответ."""
+    from paxcount.counting.identify import parse_identity
+
+    got = parse_identity('Вот что вижу:\n{"kind": "Автобус", "board_number": "1596",'
+                          ' "state_number": null, "route": "50", "doubts": ""}\nГотово.')
+    assert (got.kind, got.board_number, got.route) == ("Автобус", "1596", "50")
+    assert got.state_number is None

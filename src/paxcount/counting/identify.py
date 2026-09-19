@@ -22,6 +22,12 @@
 
 from __future__ import annotations
 
+import json
+import re
+from dataclasses import dataclass, replace
+
+from ..core.majority import strict
+
 # Ответ заказчика от 2026-09-15: размер определяется числом дверей, а у
 # рельсового транспорта — числом гармошек между вагонами.
 SIZE_RULES = """\
@@ -54,19 +60,81 @@ _ANSWER = """\
  "doubts": "<что осталось неясным, или пустая строка>"}\
 """
 
+_ANSWER_NO_SIZE = """\
+Ответ — только JSON, без пояснений вокруг:
+{"kind": "Автобус"|"Троллейбус"|"Трамвай"|null,
+ "board_number": "<бортовой номер на кузове или лобовой панели, или null>",
+ "state_number": "<государственный номер, или null>",
+ "route": "<номер маршрута с табло, или null>",
+ "doubts": "<что осталось неясным, или пустая строка>"}\
+"""
 
-def build_identify_prompt() -> str:
-    """Собирает промпт опознания для кадра, выбранного по треку ТС."""
-    return "\n\n".join([
+
+def build_identify_prompt(ask_size: bool = True) -> str:
+    """Собирает промпт опознания для кадра, выбранного по треку ТС.
+
+    `ask_size=False` — для камеры, которая снимает машину со стороны без
+    дверей. Размер определяется их числом, и с камеры 1 ответ о нём был бы
+    выдумкой: она стоит навстречу потоку и видит морду и левый борт
+    (решение 030).
+    """
+    parts = [
         "Перед вами кадр с камеры на остановке общественного транспорта "
         "Санкт-Петербурга. В кадре транспортное средство, подъехавшее к "
         "остановке.",
         "Задача: определить, что это за машина. Нужны бортовой номер "
         "(его пишут крупно на кузове или на лобовой панели), государственный "
-        "номер с бампера, номер маршрута с табло маршрутоуказателя, вид и "
-        "размер ТС.",
-        SIZE_RULES,
-        _HONESTY,
-        _PRIVACY,
-        _ANSWER,
-    ])
+        "номер с бампера, номер маршрута с табло маршрутоуказателя"
+        + (", вид и размер ТС." if ask_size else " и вид ТС."),
+    ]
+    if ask_size:
+        parts.append(SIZE_RULES)
+    parts += [_HONESTY, _PRIVACY, _ANSWER if ask_size else _ANSWER_NO_SIZE]
+    return "\n\n".join(parts)
+
+
+@dataclass(frozen=True)
+class Identity:
+    """Что один прогон разглядел на кадре. `None` — «не прочитал»."""
+
+    kind: str | None = None
+    board_number: str | None = None
+    state_number: str | None = None
+    route: str | None = None
+    size: str | None = None
+    doubts: str = ""
+
+
+FIELDS = ("kind", "board_number", "state_number", "route", "size")
+TITLES = {"kind": "вид ТС", "board_number": "бортовой номер",
+           "state_number": "госномер", "route": "маршрут", "size": "размер"}
+
+
+def parse_identity(text: str) -> Identity:
+    """Достаёт ответ из того, чем модель его обрамила."""
+    found = re.search(r"\{.*?\}", text or "", re.S)
+    if found is None:
+        raise ValueError("в ответе нет JSON — это не «пусто», а нечитаемый ответ")
+    body = json.loads(found.group(0))
+    clean = {f: (str(body[f]).strip() or None) if body.get(f) is not None else None
+              for f in FIELDS}
+    return Identity(**clean, doubts=str(body.get("doubts") or ""))
+
+
+def agreed_identity(answers: list[Identity]) -> tuple[Identity, dict[str, str]]:
+    """Поля строгого большинства и причина отказа по каждому спорному.
+
+    Поля судятся порознь: прогон может прочесть крупный бортовой номер и не
+    разобрать маршрут на табло. Согласия нет — поле пустое, а не «самое
+    правдоподобное» (решения 040, 082).
+    """
+    if len(answers) < 2:
+        return Identity(), {"всё": "один прогон — это мнение, а не согласие "
+                                    "(решение 024)"}
+    agreed, why = Identity(), {}
+    for field in FIELDS:
+        value, note = strict([getattr(a, field) for a in answers], TITLES[field])
+        if value is None and note:
+            why[field] = note
+        agreed = replace(agreed, **{field: value})
+    return agreed, why
