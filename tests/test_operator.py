@@ -257,3 +257,55 @@ class TestRealExport:
     def test_no_healthy_record_is_repaired(self, records):
         healthy = [r for r in records if r.well_formed]
         assert all(repair(r) == (r, None) for r in healthy)
+
+
+# ---- Перенажатие с другим маршрутом — исправление ---------------------------
+#
+# Оператор жмёт кнопку второй раз не только по ошибке: в четырёх случаях боевой
+# выгрузки второе нажатие пришло с ДРУГИМ маршрутом через 4-25 секунд. Это он
+# сам себя поправил, и правда в последнем нажатии — портал подтверждает его
+# (борт 38140 в этот день работал на 64, а первое нажатие говорило 62).
+# Решение заказчика 20.09: маршрут берём от последнего нажатия, время — от
+# первого, оно ближе к моменту прибытия.
+
+def test_a_repress_with_another_route_corrects_the_route():
+    """Маршрут исправляется на последний, а время остаётся от первого нажатия."""
+    from paxcount.delivery.operator import with_last_route
+
+    first = rec(created=datetime(2026, 9, 10, 8, 29, 31), board="38140", route="62")
+    second = rec(created=datetime(2026, 9, 10, 8, 29, 35), board="38140", route="64")
+    fixed, corrections = with_last_route([first, second],
+                                          drop_duplicates([first, second]).disputed)
+    assert fixed[0].route == "64", "маршрут — от последнего нажатия"
+    assert fixed[0].created == first.created, "время — от первого нажатия"
+    assert [c.was for c in corrections] == ["62"], "прежний маршрут назван"
+
+
+def test_the_repress_itself_is_left_alone():
+    """Второе нажатие остаётся как есть: оно и так несёт верный маршрут.
+
+    Из книги оно не исчезает — повторы в ней намеренно, помеченные розовым
+    (решение 075), — и подменять в нём что-либо не за чем.
+    """
+    from paxcount.delivery.operator import with_last_route
+
+    first = rec(created=datetime(2026, 9, 10, 8, 29, 31), board="38140", route="62")
+    second = rec(created=datetime(2026, 9, 10, 8, 29, 35), board="38140", route="64")
+    fixed, _ = with_last_route([first, second],
+                                drop_duplicates([first, second]).disputed)
+    assert fixed[1] is second
+
+
+def test_a_repress_with_the_same_route_corrects_nothing():
+    """Обычный повтор ничего не исправляет: спора о маршруте в нём нет.
+
+    Таких 47 из 51 в боевой выгрузке, и красить их как исправленные значило бы
+    объявить правкой то, чего мы не трогали.
+    """
+    from paxcount.delivery.operator import with_last_route
+
+    first = rec(created=datetime(2026, 9, 10, 8, 32, 26), board="5369", route="26")
+    second = rec(created=datetime(2026, 9, 10, 8, 32, 35), board="5369", route="26")
+    fixed, corrections = with_last_route([first, second],
+                                          drop_duplicates([first, second]).disputed)
+    assert corrections == [] and fixed == [first, second]

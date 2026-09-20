@@ -52,13 +52,13 @@ from paxcount.delivery.chain import (  # noqa: E402
     CHAIN_ORIGIN, Identified, entries as chain_entries,
 )
 from paxcount.delivery.marking import (  # noqa: E402
-    marks_for, marks_for_chain, marks_for_duplicate, marks_for_our_measurement,
-    marks_for_repair, marks_for_shifted_time,
+    marks_for, marks_for_chain, marks_for_correction, marks_for_duplicate,
+    marks_for_our_measurement, marks_for_repair, marks_for_shifted_time,
 )
 from paxcount.delivery.model import Occupancy  # noqa: E402
 from paxcount.delivery.plates import with_plate  # noqa: E402
 from paxcount.delivery.operator import (  # noqa: E402
-    drop_duplicates, for_stop, read_export,
+    drop_duplicates, for_stop, read_export, with_last_route,
 )
 from paxcount.delivery.sequence import (  # noqa: E402
     OPERATOR, OUR_COUNT, Decoded, Entry, backbone, clock_shift, merge,
@@ -418,11 +418,22 @@ def main() -> int:
     records: list = []
     canonical: list = []
     duplicate_ids: set[int] = set()
+    corrected_ids: set[int] = set()
     if args.operator_export is not None:
         records = for_stop(read_export(args.operator_export), args.stop)
+        # Перенажатие с другим маршрутом — поправка оператора, а не лишняя
+        # строка: маршрут берётся от последнего нажатия, время остаётся от
+        # первого. Дубли пересчитываются по исправленным записям, иначе спор о
+        # маршруте остался бы в них навсегда.
+        records, fixes = with_last_route(records, drop_duplicates(records).disputed)
         dedup = drop_duplicates(records)
         canonical = dedup.kept
         duplicate_ids = {id(r) for r in dedup.dropped}
+        corrected_ids = {id(c.record) for c in fixes}
+        for fix in fixes:
+            console.print(f"[green]{fix.record.created:%H:%M:%S} борт "
+                           f"{fix.record.board}: маршрут {fix.was} → "
+                           f"{fix.record.route} по перенажатию[/green]")
 
     decoded = []
     for item, row in zip(placed, rows):
@@ -509,9 +520,12 @@ def main() -> int:
     # целиком его, спорить в ней не с чем. Красятся только наши (решение 070).
     highlight: dict[int, set[str]] = {}
     duplicates: dict[int, set[str]] = {}
+    corrected: dict[int, set[str]] = {}
     for i, entry in enumerate(entries, start=2):
         if entry.record is not None and id(entry.record) in duplicate_ids:
             duplicates[i] = marks_for_duplicate()
+        if entry.record is not None and id(entry.record) in corrected_ids:
+            corrected[i] = marks_for_correction()
         # Графы, которые мы изменили за оператором, и графы, которых у него
         # нет вовсе (файл, камера, комментарий), — в ЛЮБОЙ строке: принцип 9
         # мерит происхождение, а не спор.
@@ -675,7 +689,7 @@ def main() -> int:
         if args.template is not None:
             written = fill_template(args.template, rows, target,
                                      highlight=highlight, duplicates=duplicates,
-                                     keep=keep)
+                                     keep=keep, corrected=corrected)
         else:
             written = write_rows(target, rows)
         console.print(f"книга: {written}")

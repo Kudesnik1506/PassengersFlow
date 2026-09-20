@@ -63,6 +63,10 @@ MISMATCH_COLOR = "FFFFE699"
 # (решение 075). Одним цветом с расхождением они сливаются, и читатель книги
 # не отличит «мы посчитали иначе» от «эту машину записали дважды».
 DUPLICATE_COLOR = "FFFFC7CE"
+# Заливка строки, где маршрут взят от перенажатия оператора: он поправил сам
+# себя, и мы приняли поправку. Сообщение третье, отличное и от спора, и от
+# лишней строки, — заказчик просил видеть такие строки своим цветом (20.09).
+CORRECTED_COLOR = "FFC6EFCE"
 
 
 def _serial(text: str) -> int:
@@ -248,6 +252,7 @@ def fill_template(
     highlight: dict[int, set[str]] | None = None,
     duplicates: dict[int, set[str]] | None = None,
     keep: dict[int, dict[str, str]] | None = None,
+    corrected: dict[int, set[str]] | None = None,
 ) -> Path:
     """Пишет книгу по шаблону заказчика. Шаблон не меняется.
 
@@ -260,6 +265,10 @@ def fill_template(
     не спор о числе, а лишняя строка (решение 075). Клетка, попавшая в оба
     списка, красится как расхождение: утверждение о числе важнее отметки о
     лишней строке.
+
+    ``corrected`` — строки, где маршрут взят от перенажатия: оператор поправил
+    сам себя, и мы приняли поправку (решение 097). Третий цвет, потому что
+    третье сообщение; спор по-прежнему перевешивает, он про эту клетку.
     """
     out.parent.mkdir(parents=True, exist_ok=True)
     if out.resolve() == template.resolve():
@@ -271,13 +280,17 @@ def fill_template(
     marks: dict[int, dict[str, str]] = {}
     for index, columns in (duplicates or {}).items():
         marks.setdefault(index, {}).update({c: DUPLICATE_COLOR for c in columns})
+    # Исправление ложится поверх отметки о лишней строке, но уступает спору:
+    # спор говорит об этой клетке, а исправление — о строке целиком.
+    for index, columns in (corrected or {}).items():
+        marks.setdefault(index, {}).update({c: CORRECTED_COLOR for c in columns})
     for index, columns in (highlight or {}).items():
         marks.setdefault(index, {}).update({c: MISMATCH_COLOR for c in columns})
     marked_style: dict[str, dict[int, int]] = {}
     if any(marks.values()):
         styles, marked_style = _with_fills(
             payload["xl/styles.xml"].decode("utf-8"),
-            (MISMATCH_COLOR, DUPLICATE_COLOR),
+            (MISMATCH_COLOR, DUPLICATE_COLOR, CORRECTED_COLOR),
         )
         payload["xl/styles.xml"] = styles.encode("utf-8")
     payload[part] = _filled_sheet(

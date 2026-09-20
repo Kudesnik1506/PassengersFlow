@@ -150,6 +150,47 @@ class Dedup:
     disputed: list[tuple[OperatorRecord, OperatorRecord]]
 
 
+@dataclass(frozen=True)
+class Correction:
+    """Запись с исправленным маршрутом и то, что стояло в ней прежде."""
+
+    record: OperatorRecord
+    was: str
+
+
+def with_last_route(
+    records: list[OperatorRecord],
+    disputed: list[tuple[OperatorRecord, OperatorRecord]],
+) -> tuple[list[OperatorRecord], list[Correction]]:
+    """Маршрут по ПОСЛЕДНЕМУ нажатию: перенажатие с другим маршрутом — поправка.
+
+    Оператор жмёт кнопку второй раз не только по ошибке. В четырёх случаях
+    боевой выгрузки второе нажатие пришло через 4-25 секунд с другим маршрутом:
+    он сам себя поправил. Прежде главной оставалась первая запись, и в книгу
+    уходил ровно тот маршрут, который он и исправлял, — а исправление стояло
+    рядом, помеченное розовым как лишняя строка.
+
+    Портал на стороне последнего нажатия: борт 38140 в этот день работал на
+    64, а первая запись говорила 62. Решение заказчика 20.09.
+
+    Время берётся от ПЕРВОГО нажатия и не трогается: оно ближе к моменту
+    прибытия, а из него считаются графы C и D. Второе нажатие остаётся в
+    списке как есть — из книги повторы не исчезают (решение 075).
+    """
+    по_первому = {id(first): second.route for first, second in disputed}
+    out: list[OperatorRecord] = []
+    fixed: list[Correction] = []
+    for record in records:
+        route = по_первому.get(id(record))
+        if route is None or route == record.route:
+            out.append(record)
+            continue
+        corrected = replace(record, route=route)
+        out.append(corrected)
+        fixed.append(Correction(record=corrected, was=record.route))
+    return out, fixed
+
+
 def drop_duplicates(records: list[OperatorRecord]) -> Dedup:
     """Снимает повторные нажатия — по бортовому номеру, а не по паре с маршрутом.
 

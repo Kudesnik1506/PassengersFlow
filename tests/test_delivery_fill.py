@@ -477,3 +477,31 @@ def test_a_customers_edit_is_written_over_our_value(tmp_path):
                           [row(route="26")], tmp_path / "книга.xlsx",
                           keep={2: {"H": "225"}})
     assert cells(book)["H"][1] == "225"
+
+
+# ---- Зелёный: строка, где маршрут взят от перенажатия -------------------------
+#
+# Оператор поправил сам себя вторым нажатием, и мы приняли его поправку. Это не
+# спор (жёлтый) и не лишняя строка (розовый), а исправление — заказчик просил
+# видеть такие строки отдельным цветом (20.09).
+
+def test_a_corrected_row_is_painted_apart_from_the_other_two(tmp_path):
+    """Три сообщения — три цвета: спор, лишняя строка, исправление."""
+    book = fill_template(template(tmp_path / "шаблон.xlsx"), [row(), row(), row()],
+                          tmp_path / "книга.xlsx",
+                          highlight={2: {"H"}}, duplicates={3: {"H"}},
+                          corrected={4: {"H"}})
+    цвета = {rgb_of(book, f"H{n}") for n in (2, 3, 4)}
+    assert len(цвета) == 3 and None not in цвета
+
+
+def test_a_disagreement_outweighs_the_correction_colour(tmp_path):
+    """Клетка, о которой мы спорим, красится спором: он говорит о числе.
+
+    Исправление маршрута — про строку целиком, а расхождение — про эту клетку,
+    и оно уже, то есть точнее.
+    """
+    book = fill_template(template(tmp_path / "шаблон.xlsx"), [row(), row()],
+                          tmp_path / "книга.xlsx",
+                          highlight={2: {"H"}}, corrected={2: {"H"}, 3: {"H"}})
+    assert rgb_of(book, "H2") != rgb_of(book, "H3")

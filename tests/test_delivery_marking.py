@@ -264,3 +264,15 @@ def test_a_chain_row_is_yellow_all_the_way():
     from paxcount.delivery.marking import marks_for_chain
 
     assert marks_for_chain() == set(COLUMNS)
+
+
+def test_a_corrected_row_is_marked_whole():
+    """Исправление маршрута метит строку целиком, а не одну графу.
+
+    Спорна не клетка: у машины оказалось два нажатия с разными маршрутами, и
+    сообщение читателю — «в этой строке мы приняли поправку оператора». Цвет
+    у неё свой, отличный и от спора, и от лишней строки.
+    """
+    from paxcount.delivery.marking import marks_for_correction
+
+    assert marks_for_correction() == set(COLUMNS)
