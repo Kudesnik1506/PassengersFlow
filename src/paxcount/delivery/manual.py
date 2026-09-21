@@ -326,8 +326,11 @@ def without(edits: list[Edit], refs: list[str],
 def save(path: Path, edits: list[Edit]) -> Path:
     """Реестр правок рядом с книгой. Заказчик его читает, а не только мы."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    body = {"правки": [{"приметы": list(e.key), "повтор": e.repeat,
-                         "графа": e.column, "значение": e.value} for e in edits]}
+    # Остальные разделы реестра (раскладка строк, `layout`) не затираются:
+    # файл один, а пишут его два модуля.
+    body = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    body["правки"] = [{"приметы": list(e.key), "повтор": e.repeat,
+                        "графа": e.column, "значение": e.value} for e in edits]
     path.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
 

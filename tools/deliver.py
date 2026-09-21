@@ -46,7 +46,7 @@ from paxcount.delivery.assemble import (  # noqa: E402
 from paxcount.delivery.model import VehicleKind  # noqa: E402
 from paxcount.delivery.reconcile import VisitFacts  # noqa: E402
 from paxcount.delivery.agreement import Agreement, agree  # noqa: E402
-from paxcount.delivery import manual  # noqa: E402
+from paxcount.delivery import layout, manual  # noqa: E402
 from paxcount.delivery.fill import fill_template, opened_by  # noqa: E402
 from paxcount.delivery.chain import (  # noqa: E402
     CHAIN_ORIGIN, Identified, entries as chain_entries,
@@ -480,8 +480,36 @@ def main() -> int:
     entries = [e if e.decoded else replace(e, row=with_footage(e.row, e.moment,
                                                                 tracks, gaps))
                 for e in entries]
+
+
     if args.portal:
         entries = ask_the_portal(entries, args.stop)
+
+    # Раскладка строк — тоже правка заказчика: удалённые повторы, переставленные
+    # машины, дописанный номер, заведённая им строка. Применяется после поиска
+    # записи и портала: приметы строки — часы, минуты и номер ТС в том виде, в
+    # каком он стоит в книге, то есть госномер после портала, а у строки без
+    # номера ещё и графа P. До них строку не узнать.
+    register = args.out / f"правки-{args.group}-{args.stop}.json"
+    baseline = args.out / book_filename([e.row for e in entries],
+                                         group=args.group, stop=args.stop)
+    previous = args.book if args.book is not None else baseline
+    plan = layout.load(register)
+    if previous != baseline and previous.exists() and baseline.exists():
+        plan = layout.merged(plan, layout.found(
+            sheet_cells(previous, BLANK_SHEET)[1:], sheet_cells(baseline, BLANK_SHEET)[1:]))
+    if not plan.empty:
+        day = datetime.strptime(entries[0].row.date, "%d.%m.%Y").date()
+        done = layout.apply(entries, plan, day=day, group=args.group,
+                             stop=args.stop, operator=args.operator)
+        entries = [replace(e, row=with_footage(e.row, e.moment, tracks, gaps))
+                    if e.origin == layout.CUSTOMER else e for e in done.entries]
+        console.print(f"раскладка заказчика: удалено {len(plan.deleted)}, "
+                       f"переставлено {len(plan.moved)}, дописан номер "
+                       f"{len(plan.renamed)}, его строк {len(plan.added)}")
+        for why in done.missed:
+            console.print(f"[red]{why}[/red]")
+    layout.save(register, plan)
 
     # Код таблицы 2 по числу дверей в кадре — на строках, где разметки нет.
     # Оттуда же берётся число дверей, которым перепроверяется размер ТС.
@@ -552,6 +580,9 @@ def main() -> int:
         if entry.origin == CHAIN_ORIGIN:
             verdict = "[yellow]записи нет[/yellow]"
             source = "[yellow]цепочка К1[/yellow]"
+        elif entry.origin == layout.CUSTOMER:
+            verdict = ""
+            source = "заказчик"
         elif not entry.decoded:
             verdict = ""
             source = ("[magenta]повтор[/magenta]"
@@ -613,9 +644,10 @@ def main() -> int:
     # сборка (`out/<имя>`). Найденная правка закрепляется в реестре: после
     # записи книга с копией сравняются, разницы не останется, а помнить надо
     # навсегда.
-    register = args.out / f"правки-{args.group}-{args.stop}.json"
     baseline = args.out / name
-    edits = manual.load(register)
+    # Клетки строк, у которых сменились приметы (дописанный номер, новая
+    # строка), обычной разницей не найти — их собрала раскладка.
+    edits = manual.merged(manual.load(register), list(plan.edits))
     previous = args.book if args.book is not None else baseline
     if previous.exists():
         was = sheet_cells(previous, BLANK_SHEET)[1:]
@@ -629,9 +661,10 @@ def main() -> int:
                 console.print(f"[dim]графа {column}: в {count} клетках значение "
                                "сохранено чужим редактором не в своём виде — "
                                "восстановлено, правкой не считается[/dim]")
-            if diff.unknown:
+            unknown = [k for k in diff.unknown if k not in plan.explained]
+            if unknown:
                 console.print(f"[red]строк книги нет в копии прошлой сборки: "
-                               f"{len(diff.unknown)} — правки в них не распознать[/red]")
+                               f"{len(unknown)} — правки в них не распознать[/red]")
         else:
             # Копии прошлой сборки нет: в графах, которые заполняем мы, правку
             # распознать нечем. Пустые у нас клетки заведомо его — переносим их.
@@ -640,6 +673,9 @@ def main() -> int:
                 console.print("[yellow]копии прошлой сборки нет: правки заказчика в "
                                "наших графах не распознаются, переносится только "
                                "то, чего мы не заполняем[/yellow]")
+    # Правки в строках, которые заказчик удалил сам, держаться не за что — и
+    # потерей они не считаются, иначе удалённый повтор запер бы книгу навсегда.
+    edits = layout.surviving(edits, plan)
     try:
         edits = manual.without(edits, args.drop_manual, rows)
     except LookupError as why:
